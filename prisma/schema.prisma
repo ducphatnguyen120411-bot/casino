@@ -8,15 +8,25 @@ generator client {
 }
 
 model User {
-  id           String   @id // Discord User ID
-  balance      Float    @default(1000)
-  lastDaily    DateTime?
-  stocks       Json?    // Lưu trữ cổ phiếu sở hữu { "AAPL": 10 }
-  properties   Json?    // Lưu trữ BĐS { "Penthouse": 1 }
-  lastReaction DateTime?
+  id              String    @id // Discord User ID
+  balance         Float     @default(1000)
+  
+  // Hệ thống Nhiệm vụ & Daily
+  lastDaily       DateTime? @default(dbgenerated("'1970-01-01 00:00:00'"))
+  msgCount        Int       @default(0)       // Đếm tin nhắn trong ngày
+  claimedChatter  Boolean   @default(false)   // Trạng thái nhận thưởng nhiệm vụ chat
+  hasWonToday     Boolean   @default(false)   // Trạng thái đã thắng ván game nào chưa
+  claimedWin      Boolean   @default(false)   // Trạng thái nhận thưởng nhiệm vụ thắng game
+  
+  // Hệ thống Kinh tế & Tài sản
+  stocks          Json?     // Lưu trữ cổ phiếu sở hữu { "AAPL": 10 }
+  properties      Json?     // Lưu trữ BĐS { "Penthouse": 1 }
+  
+  // Mini games
+  lastReaction    DateTime?
 }
 
 model Market {
-  id    Int    @id @default(1)
+  id     Int    @id @default(1)
   stocks Json   // { "AAPL": 150.5, "VCASH": 10.0 }
 }
