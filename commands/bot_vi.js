@@ -10,17 +10,24 @@ module.exports = {
                 .setRequired(false)),
 
     async execute(input, prisma) {
-        // Hỗ trợ cả Slash Command và Prefix Command (nếu bạn có hệ thống handler cũ)
-        const userObj = input.options?.getUser('user') || input.author || input.user;
-        const isSelf = userObj.id === (input.user?.id || input.author?.id);
+        // 1. Phân biệt Slash Command và Prefix Command
+        const isSlash = input.applicationId !== undefined;
+        const author = isSlash ? input.user : input.author;
         
-        // Tránh lỗi khi tương tác mất quá lâu
-        if (input.deferred || !input.replied) {
-            try { await input.deferReply(); } catch (e) {}
+        // Lấy User đối tượng (nếu là prefix thì check mentions)
+        const userObj = isSlash 
+            ? (input.options.getUser('user') || author) 
+            : (input.mentions.users.first() || author);
+
+        const isSelf = userObj.id === author.id;
+
+        // 2. Xử lý phản hồi ban đầu (Chỉ defer nếu là Slash)
+        if (isSlash) {
+            await input.deferReply();
         }
 
         try {
-            // Lấy hoặc tạo dữ liệu người dùng
+            // 3. Lấy hoặc tạo dữ liệu người dùng
             let userData = await prisma.user.findUnique({ where: { id: userObj.id } });
 
             if (!userData) {
@@ -29,10 +36,13 @@ module.exports = {
                 });
             }
 
-            // Tính toán danh hiệu dựa trên msgCount (Ví dụ)
+            // 4. Logic tính danh hiệu
             const level = Math.floor(userData.msgCount / 100);
-            const rankName = level > 10 ? '💎 Đại Gia' : level > 5 ? '🌟 Tích Cực' : '🌱 Thành Viên';
+            let rankName = '🌱 Thành Viên';
+            if (level > 10) rankName = '💎 Đại Gia';
+            else if (level > 5) rankName = '🌟 Tích Cực';
 
+            // 5. Tạo Embed
             const embed = new EmbedBuilder()
                 .setColor(isSelf ? '#00ff99' : '#ffcc00')
                 .setAuthor({ 
@@ -60,17 +70,23 @@ module.exports = {
                     }
                 )
                 .setFooter({ 
-                    text: `Yêu cầu bởi ${input.user?.username || input.author?.username}`, 
-                    iconURL: (input.user || input.author).displayAvatarURL() 
+                    text: `Yêu cầu bởi ${author.username}`, 
+                    iconURL: author.displayAvatarURL() 
                 })
                 .setTimestamp();
 
-            return await input.editReply({ embeds: [embed] });
+            // 6. Trả lời (Slash dùng editReply, Prefix dùng reply)
+            if (isSlash) {
+                return await input.editReply({ embeds: [embed] });
+            } else {
+                return await input.reply({ embeds: [embed] });
+            }
 
         } catch (error) {
             console.error('❌ Lỗi thực thi ví:', error);
-            const errorMsg = 'Có lỗi xảy ra khi truy cập dữ liệu ví!';
-            if (input.deferred) return await input.editReply(errorMsg);
+            const errorMsg = '⚠️ Có lỗi xảy ra khi truy cập dữ liệu ví!';
+            
+            if (isSlash) return await input.editReply(errorMsg);
             return input.reply(errorMsg);
         }
     }
