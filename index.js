@@ -48,7 +48,7 @@ client.on(Events.MessageCreate, async (message) => {
     try {
         // Phân luồng lệnh Tiền tệ (Sửa lỗi đường dẫn module)
         if (['nap', 'tru', 'pay'].includes(command)) {
-            const adminModule = require('./commands/admin.js');
+           const adminModule = require('./commands/admin.js');
             return await adminModule.execute(message, prisma, args, command);
         }
 
