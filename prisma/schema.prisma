@@ -1,88 +1,32 @@
-const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
-const { PrismaClient } = require('@prisma/client');
-require('dotenv').config();
+// prisma/schema.prisma
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates
-    ]
-});
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
 
-const prisma = new PrismaClient();
-const voiceTimers = new Map();
+generator client {
+  provider = "prisma-client-js"
+}
 
-// Tự động đếm tin nhắn và Reset nhiệm vụ hàng ngày
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
+model User {
+  id              String    @id
+  balance         Float     @default(1000)
+  level           Int       @default(1)
+  lastDaily       DateTime?
+  msgCount        Int       @default(0)
+  claimedChatter  Boolean   @default(false)
+  hasWonToday     Boolean   @default(false)
+  claimedWin      Boolean   @default(false)
+  stocks          Json?     @default("{}")
+  totalWins       Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
 
-    const today = new Date().toDateString();
-    const user = await prisma.user.findUnique({ where: { id: message.author.id } });
-
-    if (user) {
-        // Reset nếu qua ngày mới
-        if (user.lastDaily && user.lastDaily.toDateString() !== today) {
-            await prisma.user.update({
-                where: { id: message.author.id },
-                data: { msgCount: 1, hasWonToday: false, claimedChatter: false, claimedWin: false, lastDaily: new Date() }
-            });
-        } else {
-            await prisma.user.update({
-                where: { id: message.author.id },
-                data: { msgCount: { increment: 1 } }
-            });
-        }
-    } else {
-        await prisma.user.create({ data: { id: message.author.id, lastDaily: new Date() } });
-    }
-});
-
-// Logic Bất Động Sản: Treo Voice nhận Cash
-client.on('voiceStateUpdate', async (oldState, newState) => {
-    const userId = oldState.member.id;
-
-    // Khi người dùng vào Voice
-    if (!oldState.channelId && newState.channelId) {
-        voiceTimers.set(userId, Date.now());
-    } 
-    // Khi người dùng thoát Voice
-    else if (oldState.channelId && !newState.channelId) {
-        const startTime = voiceTimers.get(userId);
-        if (startTime) {
-            const minutes = Math.floor((Date.now() - startTime) / 60000);
-            if (minutes > 0) {
-                const user = await prisma.user.findUnique({ where: { id: userId } });
-                const currentLevel = user?.level || 1;
-                let reward = minutes * (currentLevel * 10);
-                
-                // Bonus x1.5 nếu treo trên 60 phút
-                if (minutes >= 60) reward = Math.floor(reward * 1.5);
-
-                await prisma.user.update({
-                    where: { id: userId },
-                    data: { balance: { increment: reward } }
-                });
-                console.log(`💰 [Real Estate] ${oldState.member.user.tag} nhận ${reward} Cash cho ${minutes} phút.`);
-            }
-            voiceTimers.delete(userId);
-        }
-    }
-});
-
-// Xử lý Interaction (Slash Commands)
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    
-    // Nạp Command tương ứng (Ví dụ /realestate)
-    try {
-        const command = require(`./commands/bot_${interaction.commandName}`);
-        await command.execute(interaction, prisma);
-    } catch (error) {
-        console.error(error);
-        if (!interaction.replied) interaction.reply({ content: '❌ Lỗi thực thi lệnh!', ephemeral: true });
-    }
-});
-
-client.login(process.env.DISCORD_TOKEN);
+model Market {
+  id        Int      @id @default(1)
+  price     Float    @default(100.0)
+  history   Json
+  updatedAt DateTime @updatedAt
+}
