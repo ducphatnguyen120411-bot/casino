@@ -9,7 +9,7 @@ let history = [];
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('taixiu')
-        .setDescription('💎 Sòng bài Thượng lưu - Trải nghiệm đẳng cấp')
+        .setDescription('💎 Sòng bài Thượng lưu - Hiệu ứng shuffle đẳng cấp')
         .addIntegerOption(opt => 
             opt.setName('money')
                 .setDescription('Số tiền đặt cược')
@@ -29,7 +29,7 @@ module.exports = {
         }
 
         try {
-            // 1. Kiểm tra ví & Khởi tạo (Dùng upsert để tránh lỗi findUnique)
+            // 1. Kiểm tra ví & Khởi tạo
             let userData = await prisma.user.upsert({
                 where: { id: user.id },
                 update: {},
@@ -41,7 +41,7 @@ module.exports = {
                 return isSlash ? input.reply({ content: lowMoney, ephemeral: true }) : input.reply(lowMoney);
             }
 
-            // 2. Giao diện sảnh chờ
+            // 2. Giao diện sảnh chờ (Dàn dựng cực chuyên nghiệp)
             const cauDisplay = history.length > 0 
                 ? history.slice(-10).map(res => res === 'TAI' ? '🔴' : '🔵').join(' ') 
                 : '`Chưa có dữ liệu ván đấu`';
@@ -57,7 +57,8 @@ module.exports = {
                     `──────────────────────────────\n` +
                     `SOI CẦU: ${history.slice(-5).join(' - ') || 'N/A'}\n` +
                     `\`\`\`\n` +
-                    `**📊 Lịch sử:** ${cauDisplay}`
+                    `**📊 Lịch sử gần đây:**\n${cauDisplay}\n\n` +
+                    `*Quý khách vui lòng chọn cửa đặt...*`
                 )
                 .setFooter({ text: '⏳ Hệ thống tự hủy sau 15s' });
 
@@ -66,7 +67,6 @@ module.exports = {
                 new ButtonBuilder().setCustomId('XIU').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Primary)
             );
 
-            // Gửi tin nhắn ban đầu
             const response = await input.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true });
 
             const collector = response.createMessageComponentCollector({
@@ -76,8 +76,8 @@ module.exports = {
             });
 
             collector.on('collect', async i => {
-                // Khóa tiền và vô hiệu hóa nút ngay lập tức
-                await i.update({ content: '⚙️ **Ghi nhận đặt cược...**', embeds: [], components: [] });
+                // Khóa tiền và xóa giao diện cũ
+                await i.update({ content: '⚙️ **Đang ghi nhận đặt cược...**', embeds: [], components: [] });
                 
                 await prisma.user.update({ 
                     where: { id: user.id }, 
@@ -85,20 +85,26 @@ module.exports = {
                 });
 
                 const userChoice = i.customId;
+                const diceIcons = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 
-                // --- HIỆU ỨNG PROGRESS BAR ---
-                const progressFrames = [
-                    '✨ **Đang xốc đĩa...**\n`[▓░░░░░░░░░] 10%`',
-                    '🎲 **Đang mở bát...**\n`[▓▓▓▓▓▓░░░░] 60%`',
-                    '🎲 **Xong!**\n`[▓▓▓▓▓▓▓▓▓▓] 100%`'
-                ];
+                // --- PHẦN 3: HIỆU ỨNG SHUFFLE XÚC XẮC XOAY ---
+                for (let step = 0; step < 6; step++) {
+                    const r1 = diceIcons[Math.floor(Math.random() * 6)];
+                    const r2 = diceIcons[Math.floor(Math.random() * 6)];
+                    const r3 = diceIcons[Math.floor(Math.random() * 6)];
+                    
+                    const progress = '▓'.repeat(step * 3) + '░'.repeat(15 - step * 3);
+                    
+                    const shuffleMsg = 
+                        `🎰 **VERDICT CASINO - ĐANG LẮC BÁT...**\n` +
+                        `🎲 **[ ${r1} ${r2} ${r3} ]**\n` +
+                        `\`[${progress}]\` ${(step * 20)}%`;
 
-                for (const frame of progressFrames) {
-                    await i.editReply({ content: frame });
-                    await new Promise(r => setTimeout(r, 600));
+                    await i.editReply({ content: shuffleMsg });
+                    await new Promise(r => setTimeout(r, 500)); // Delay tạo độ hồi hộp
                 }
 
-                // 4. Xử lý kết quả
+                // 4. Tính toán kết quả thật
                 const d = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
                 const total = d.reduce((a, b) => a + b, 0);
                 const result = total >= 11 ? 'TAI' : 'XIU';
@@ -119,22 +125,27 @@ module.exports = {
                     finalBalance = current.balance;
                 }
 
-                const diceIcons = { 1: '⚀', 2: '⚁', 3: '⚂', 4: '⚃', 5: '⚄', 6: '⚅' };
+                const finalDiceStr = d.map(v => diceIcons[v-1]).join(' ');
+                
+                // --- PHẦN 5: GIAO DIỆN KẾT QUẢ ANSI ---
                 const resultEmbed = new EmbedBuilder()
                     .setColor(isWin ? 0x2ECC71 : 0xE74C3C)
-                    .setTitle(`${isWin ? '🎊' : '💸'} Kết Quả: ${d.map(v => diceIcons[v]).join(' ')} ➜ ${total} (${result})`)
+                    .setTitle(`${isWin ? '🎊 THẮNG LỚN' : '💸 THUA RỒI'}: ${finalDiceStr} ➜ ${total} (${result})`)
                     .setDescription(
                         `\`\`\`ansi\n` +
-                        `▸ Người chơi:  ${user.username}\n` +
-                        `▸ Lựa chọn:    ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
-                        `▸ Biến động:   ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
-                        `▸ Số dư mới:   [0;36m${finalBalance.toLocaleString()}[0m Cash\n` +
+                        `[0;33m╔══════════════════════════════════╗[0m\n` +
+                        `  [1;37mKẾT QUẢ VÁN ĐẤU TRỰC TUYẾN[0m\n` +
+                        `[0;33m╚══════════════════════════════════╝[0m\n` +
+                        ` ▸ Người chơi:  ${user.username}\n` +
+                        ` ▸ Đã chọn:     ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
+                        ` ▸ Biến động:   ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
+                        ` ▸ Số dư mới:   [0;36m${finalBalance.toLocaleString()}[0m Cash\n` +
                         `────────────────────────────────────\n` +
                         `\`\`\`\n` +
-                        `**📊 Cầu hiện tại:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
+                        `**📊 Soi cầu:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
                     );
 
-                await i.editReply({ content: null, embeds: [resultEmbed] });
+                await i.editReply({ content: '✅ **Mở bát thành công!**', embeds: [resultEmbed] });
             });
 
             collector.on('end', (collected, reason) => {
