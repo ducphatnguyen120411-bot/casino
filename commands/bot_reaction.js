@@ -1,99 +1,119 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 
 module.exports = {
     name: 'reaction',
     async execute(message, prisma) {
-        // 1. Giao diện chuẩn bị
+        // --- 1. GIAO DIỆN CHUẨN BỊ ---
         const prepEmbed = new EmbedBuilder()
             .setColor('#f1c40f')
             .setTitle('🎯 TRÒ CHƠI PHẢN XẠ')
-            .setDescription('Chuẩn bị... Khi biểu tượng 💥 xuất hiện, hãy nhấn vào nó thật nhanh!')
-            .setFooter({ text: 'Phần thưởng: 100 Verdict Cash + Hoàn thành nhiệm vụ ngày' });
+            .setDescription('**Luật chơi:** Khi nút chuyển sang màu **XANH** và hiện biểu tượng 💥, hãy nhấn thật nhanh!\n\n⏳ *Đang thiết lập trận đấu...*')
+            .setFooter({ text: 'Phần thưởng: 100 Verdict Cash' });
 
-        const gameMsg = await message.channel.send({ embeds: [prepEmbed] });
+        // Nút bấm ở trạng thái chờ (vô hiệu hóa)
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('react_button')
+                .setLabel('Đợi đã...')
+                .setEmoji('⏳')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true)
+        );
 
-        // CHỐNG SPAM: Đảm bảo tin nhắn không có reaction nào trước khi game bắt đầu
-        try {
-            await gameMsg.reactions.removeAll();
-        } catch (e) { /* Bỏ qua nếu bot thiếu quyền */ }
+        const gameMsg = await message.channel.send({ embeds: [prepEmbed], components: [row] });
 
-        // 2. Random thời gian chờ từ 2 đến 5 giây
-        const delay = Math.floor(Math.random() * 3000) + 2000;
+        // --- 2. RANDOM THỜI GIAN CHỜ (3-7 giây) ---
+        const delay = Math.floor(Math.random() * 4000) + 3000;
 
-        setTimeout(async () => {
-            const startTime = Date.now();
+        // Đợi delay
+        await new Promise(resolve => setTimeout(resolve, delay));
 
-            // 3. Đổi giao diện sang trạng thái kích hoạt
-            const activeEmbed = new EmbedBuilder()
-                .setColor('#ff4757')
-                .setTitle('💥 NHẤN NGAY !!!')
-                .setDescription('Ai nhanh tay nhất sẽ thắng!')
-                .setImage('https://i.imgur.com/8vVz7uN.gif');
+        // --- 3. KÍCH HOẠT TRÒ CHƠI ---
+        const startTime = Date.now();
 
-            await gameMsg.edit({ embeds: [activeEmbed] });
-            
-            // Thêm reaction ngay khi đổi giao diện
-            await gameMsg.react("💥");
+        const activeEmbed = new EmbedBuilder()
+            .setColor('#ff4757')
+            .setTitle('💥 NHẤN NGAY !!!')
+            .setDescription('QUẤT LUÔN! AI NHANH TAY NHẤT?')
+            .setImage('https://i.imgur.com/8vVz7uN.gif');
 
-            // 4. Bộ lọc: Chỉ tính người nhấn đầu tiên và không phải Bot
-            const filter = (reaction, user) => reaction.emoji.name === '💥' && !user.bot;
-            
-            // Thu thập 1 người duy nhất (max: 1)
-            const collector = gameMsg.createReactionCollector({ filter, time: 8000, max: 1 });
+        const activeRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('react_button')
+                .setLabel('BẤM ĐÂY!')
+                .setEmoji('💥')
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(false)
+        );
 
-            collector.on('collect', async (reaction, user) => {
-                const reactionTime = ((Date.now() - startTime) / 1000).toFixed(3);
+        await gameMsg.edit({ embeds: [activeEmbed], components: [activeRow] });
 
-                try {
-                    // 5. Cập nhật Database: Tăng tiền + Đánh dấu đã thắng cho nhiệm vụ ngày
-                    const updatedUser = await prisma.user.upsert({
-                        where: { id: user.id },
-                        update: { 
-                            balance: { increment: 100 },
-                            hasWonToday: true // QUAN TRỌNG: Kết nối với bot_daily/tasks
-                        },
-                        create: { 
-                            id: user.id, 
-                            balance: 1100, // 1000 mặc định + 100 thưởng
-                            hasWonToday: true 
-                        }
-                    });
+        // --- 4. BỘ LỌC VÀ THU THẬP TƯƠNG TÁC ---
+        const collector = gameMsg.createMessageComponentCollector({
+            componentType: ComponentType.Button,
+            time: 10000, // Cho phép 10 giây để bấm
+            max: 1 // Chỉ lấy người đầu tiên
+        });
 
-                    // 6. Embed thông báo thắng cuộc
-                    const winEmbed = new EmbedBuilder()
-                        .setColor('#2ed573')
-                        .setAuthor({ name: user.username, iconURL: user.displayAvatarURL() })
-                        .setTitle('🏆 CHIẾN THẮNG!')
-                        .addFields(
-                            { name: '⏱️ Tốc độ', value: `\`${reactionTime} giây\``, inline: true },
-                            { name: '💰 Verdict Cash', value: `\`+100\``, inline: true },
-                            { name: '🌟 Nhiệm vụ', value: '`Đã hoàn thành mục Thần Bài`', inline: false }
-                        )
-                        .setFooter({ text: 'Sử dụng !tasks claim để nhận thêm thưởng lớn!' })
-                        .setTimestamp();
+        collector.on('collect', async (interaction) => {
+            const reactionTime = ((Date.now() - startTime) / 1000).toFixed(3);
+            const user = interaction.user;
 
-                    await message.channel.send({ content: `<@${user.id}>`, embeds: [winEmbed] });
-                } catch (error) {
-                    console.error("Lỗi Prisma Reaction:", error);
-                    message.channel.send(`❌ Có lỗi xảy ra khi lưu kết quả cho **${user.username}**.`);
-                }
-            });
+            // Trả lời interaction ngay lập tức để tránh lỗi "Interaction Failed"
+            await interaction.deferUpdate();
 
-            collector.on('end', async (collected) => {
-                // Xóa icon 💥 cuối trận để tránh bấm nhầm sau này
-                try {
-                    await gameMsg.reactions.removeAll();
-                } catch (e) { /* Bỏ qua */ }
+            try {
+                // 5. CẬP NHẬT DATABASE
+                await prisma.user.upsert({
+                    where: { id: user.id },
+                    update: { balance: { increment: 100 } },
+                    create: { id: user.id, balance: 1100, msgCount: 0 }
+                });
+
+                const winEmbed = new EmbedBuilder()
+                    .setColor('#2ed573')
+                    .setAuthor({ name: user.username, iconURL: user.displayAvatarURL() })
+                    .setTitle('🏆 CHIẾN THẮNG!')
+                    .addFields(
+                        { name: '⏱️ Tốc độ', value: `\`${reactionTime} giây\``, inline: true },
+                        { name: '💰 Thưởng', value: `\`+100 VCASH\``, inline: true }
+                    )
+                    .setFooter({ text: 'Game kết thúc' })
+                    .setTimestamp();
+
+                // Vô hiệu hóa nút sau khi có người thắng
+                const disabledRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('react_button')
+                        .setLabel(`Thắng cuộc: ${user.username}`)
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true)
+                );
+
+                await gameMsg.edit({ embeds: [winEmbed], components: [disabledRow] });
+
+            } catch (error) {
+                console.error("Lỗi Reaction Game:", error);
+            }
+        });
+
+        collector.on('end', async (collected) => {
+            if (collected.size === 0) {
+                const timeoutEmbed = new EmbedBuilder()
+                    .setColor('#7f8c8d')
+                    .setTitle('😴 HẾT GIỜ')
+                    .setDescription('Không có ai đủ nhanh tay cả. Trận đấu đã hủy bỏ!');
                 
-                if (collected.size === 0) {
-                    const timeoutEmbed = new EmbedBuilder()
-                        .setColor('#7f8c8d')
-                        .setTitle('😴 KHÔNG AI PHẢN HỒI')
-                        .setDescription('Mọi người chậm chạp quá, trận đấu đã kết thúc!');
-                    gameMsg.edit({ embeds: [timeoutEmbed] });
-                }
-            });
+                const finalRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('timeout')
+                        .setLabel('Hết thời gian')
+                        .setStyle(ButtonStyle.Danger)
+                        .setDisabled(true)
+                );
 
-        }, delay);
+                await gameMsg.edit({ embeds: [timeoutEmbed], components: [finalRow] }).catch(() => null);
+            }
+        });
     }
 };
