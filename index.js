@@ -28,12 +28,10 @@ for (const file of commandFiles) {
 }
 
 // --- 2. XỬ LÝ LỆNH PREFIX (!nap, !tru, !pay, !vi, !daily) ---
-const ADMIN_ROLE_ID = '1465374336214106237';
-
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // Tự động tạo User & Đếm tin nhắn (Chat to Earn)
+    // Chat to Earn & Tự động tạo User
     await prisma.user.upsert({
         where: { id: message.author.id },
         update: { msgCount: { increment: 1 } },
@@ -46,13 +44,12 @@ client.on(Events.MessageCreate, async (message) => {
     const command = args.shift().toLowerCase();
 
     try {
-        // Phân luồng lệnh Tiền tệ (Sửa lỗi đường dẫn module)
+        // Fix lỗi MODULE_NOT_FOUND bằng cách trỏ đúng vào thư mục commands
         if (['nap', 'tru', 'pay'].includes(command)) {
-           const adminModule = require('./commands/admin.js');
+            const adminModule = require('./commands/admin.js');
             return await adminModule.execute(message, prisma, args, command);
         }
 
-        // Phân luồng lệnh Cá nhân
         if (command === 'vi') {
             const vi = require('./commands/bot_vi.js');
             return await vi.execute(message, prisma);
@@ -73,6 +70,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
     try {
+        // Truyền prisma vào để fix lỗi undefined findUnique
         await command.execute(interaction, prisma);
     } catch (error) {
         console.error(error);
@@ -80,7 +78,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 });
 
-// --- 4. CẬP NHẬT THỊ TRƯỜNG (Sửa lỗi 'history' Invalid value) ---
+// --- 4. CẬP NHẬT THỊ TRƯỜNG (Fix lỗi 'history' Invalid value) ---
 setInterval(async () => {
     try {
         const market = await prisma.market.findUnique({ where: { id: 1 } });
@@ -89,10 +87,12 @@ setInterval(async () => {
         const change = (Math.random() * 4 - 2); 
         const newPrice = Math.max(10, oldPrice + (oldPrice * (change / 100)));
         
-        // Fix lỗi: Luôn lưu history dưới dạng String (JSON)
+        // Luôn đảm bảo history là một mảng trước khi stringify
         let history = [];
         if (market && market.history) {
-            try { history = JSON.parse(market.history); } catch (e) { history = []; }
+            try { 
+                history = typeof market.history === 'string' ? JSON.parse(market.history) : market.history; 
+            } catch (e) { history = []; }
         }
         
         history.push(parseFloat(newPrice.toFixed(2)));
@@ -102,7 +102,7 @@ setInterval(async () => {
             where: { id: 1 },
             update: { 
                 price: newPrice, 
-                history: JSON.stringify(history) // Chuyển mảng thành chuỗi String
+                history: JSON.stringify(history) // Fix: Chuyển về String để DB không báo lỗi
             },
             create: { 
                 id: 1, 
@@ -110,14 +110,12 @@ setInterval(async () => {
                 history: JSON.stringify(history) 
             }
         });
-        console.log(`📈 Thị trường cập nhật: ${newPrice.toFixed(2)} VCASH`);
+        console.log(`📈 Market Update: ${newPrice.toFixed(2)} VCASH`);
     } catch (e) { console.error('❌ Lỗi Market:', e.message); }
-}, 300000); // 5 phút
+}, 300000);
 
 client.once('ready', () => {
-    console.log(`✅ Đã đăng nhập: ${client.user.tag}`);
-    
-    // Đăng ký Slash Commands
+    console.log(`✅ Bot Online: ${client.user.tag}`);
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commandsJSON })
         .then(() => console.log('✅ Đã đồng bộ Slash Commands'))
