@@ -3,7 +3,7 @@ const {
     ButtonBuilder, ButtonStyle, ComponentType 
 } = require('discord.js');
 
-// Lưu lịch sử (Sẽ reset khi bot restart - Muốn vĩnh viễn nên dùng DB)
+// Lưu lịch sử (Sẽ reset khi bot restart)
 let history = []; 
 
 module.exports = {
@@ -17,19 +17,19 @@ module.exports = {
                 .setMinValue(100)),
 
     async execute(input, prisma, args) {
-        // Tự động nhận diện Slash hoặc Prefix
-        const isInteraction = !!input.options;
-        const amount = isInteraction ? input.options.getInteger('money') : parseInt(args[0]);
-        const user = isInteraction ? input.user : input.author;
+        // --- PHẦN 1: NHẬN DIỆN LOẠI LỆNH (! hoặc /) ---
+        const isSlash = !!input.options;
+        const amount = isSlash ? input.options.getInteger('money') : parseInt(args[0]);
+        const user = isSlash ? input.user : input.author;
 
-        // Kiểm tra đầu vào
+        // Kiểm tra số tiền hợp lệ
         if (!amount || isNaN(amount) || amount < 100) {
-            const errorMsg = "❌ Quý khách vui lòng nhập số tiền cược hợp lệ (Tối thiểu 100)!";
-            return isInteraction ? input.reply({ content: errorMsg, ephemeral: true }) : input.reply(errorMsg);
+            const msg = "❌ Quý khách vui lòng nhập số tiền cược hợp lệ (Ví dụ: `!taixiu 5000` hoặc dùng `/taixiu`)!";
+            return isSlash ? input.reply({ content: msg, ephemeral: true }) : input.reply(msg);
         }
 
         try {
-            // 1. Kiểm tra ví & Khởi tạo (Dùng upsert để đảm bảo user luôn tồn tại)
+            // 1. Kiểm tra ví & Khởi tạo (Dùng upsert để tránh lỗi findUnique)
             let userData = await prisma.user.upsert({
                 where: { id: user.id },
                 update: {},
@@ -38,10 +38,10 @@ module.exports = {
 
             if (userData.balance < amount) {
                 const lowMoney = `⚠️ **Số dư không đủ!** Bạn cần thêm \`${(amount - userData.balance).toLocaleString()}\` Cash.`;
-                return isInteraction ? input.reply({ content: lowMoney, ephemeral: true }) : input.reply(lowMoney);
+                return isSlash ? input.reply({ content: lowMoney, ephemeral: true }) : input.reply(lowMoney);
             }
 
-            // 2. Chuẩn bị giao diện Soi Cầu
+            // 2. Giao diện sảnh chờ
             const cauDisplay = history.length > 0 
                 ? history.slice(-10).map(res => res === 'TAI' ? '🔴' : '🔵').join(' ') 
                 : '`Chưa có dữ liệu ván đấu`';
@@ -51,14 +51,13 @@ module.exports = {
                 .setTitle('⚜️ VERDICT PRESTIGE CASINO ⚜️')
                 .setThumbnail(user.displayAvatarURL())
                 .setDescription(
-                    ````arm\n` +
+                    `\`\`\`arm\n` +
                     `CHỦ BÀN: ${user.username.toUpperCase()}\n` +
                     `MỨC CƯỢC: ${amount.toLocaleString()} CASH\n` +
                     `──────────────────────────────\n` +
                     `SOI CẦU: ${history.slice(-5).join(' - ') || 'N/A'}\n` +
-                    ````\n` +
-                    `**📊 Lịch sử ván đấu:**\n${cauDisplay}\n\n` +
-                    `*Quý khách vui lòng chọn cửa đặt...*`
+                    `\`\`\`\n` +
+                    `**📊 Lịch sử:** ${cauDisplay}`
                 )
                 .setFooter({ text: '⏳ Hệ thống tự hủy sau 15s' });
 
@@ -67,9 +66,8 @@ module.exports = {
                 new ButtonBuilder().setCustomId('XIU').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Primary)
             );
 
-            const response = isInteraction 
-                ? await input.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true })
-                : await input.reply({ embeds: [lobbyEmbed], components: [row] });
+            // Gửi tin nhắn ban đầu
+            const response = await input.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true });
 
             const collector = response.createMessageComponentCollector({
                 filter: i => i.user.id === user.id,
@@ -78,8 +76,8 @@ module.exports = {
             });
 
             collector.on('collect', async i => {
-                // 3. LOCK TIỀN NGAY & Vô hiệu hóa nút (Tránh bug)
-                await i.update({ content: '⚙️ **Đang ghi nhận đặt cược...**', components: [], embeds: [] });
+                // Khóa tiền và vô hiệu hóa nút ngay lập tức
+                await i.update({ content: '⚙️ **Ghi nhận đặt cược...**', embeds: [], components: [] });
                 
                 await prisma.user.update({ 
                     where: { id: user.id }, 
@@ -88,17 +86,16 @@ module.exports = {
 
                 const userChoice = i.customId;
 
-                // --- HIỆU ỨNG LẮC BÁT PROGRESS BAR (Mượt hơn) ---
+                // --- HIỆU ỨNG PROGRESS BAR ---
                 const progressFrames = [
                     '✨ **Đang xốc đĩa...**\n`[▓░░░░░░░░░] 10%`',
-                    '✨ **Đang xốc đĩa...**\n`[▓▓▓░░░░░░░] 35%`',
                     '🎲 **Đang mở bát...**\n`[▓▓▓▓▓▓░░░░] 60%`',
-                    '🎲 **Đang mở bát...**\n`[▓▓▓▓▓▓▓▓▓▓] 100%`'
+                    '🎲 **Xong!**\n`[▓▓▓▓▓▓▓▓▓▓] 100%`'
                 ];
 
                 for (const frame of progressFrames) {
                     await i.editReply({ content: frame });
-                    await new Promise(r => setTimeout(r, 500));
+                    await new Promise(r => setTimeout(r, 600));
                 }
 
                 // 4. Xử lý kết quả
@@ -123,23 +120,17 @@ module.exports = {
                 }
 
                 const diceIcons = { 1: '⚀', 2: '⚁', 3: '⚂', 4: '⚃', 5: '⚄', 6: '⚅' };
-                const diceString = d.map(v => diceIcons[v]).join(' ');
-                
-                // --- GIAO DIỆN KẾT QUẢ SANG TRỌNG ---
                 const resultEmbed = new EmbedBuilder()
                     .setColor(isWin ? 0x2ECC71 : 0xE74C3C)
-                    .setTitle(`${isWin ? '🎊' : '💸'} Kết Quả: ${diceString} ➜ ${total} (${result})`)
+                    .setTitle(`${isWin ? '🎊' : '💸'} Kết Quả: ${d.map(v => diceIcons[v]).join(' ')} ➜ ${total} (${result})`)
                     .setDescription(
-                        ````ansi\n` +
-                        `[0;33m╔══════════════════════════════════╗[0m\n` +
-                        `  [1;37mTHÔNG TIN VÁN ĐẤU[0m\n` +
-                        `[0;33m╚══════════════════════════════════╝[0m\n` +
-                        ` ▸ Người chơi:  ${user.username}\n` +
-                        ` ▸ Lựa chọn:    ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
-                        ` ▸ Biến động:   ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
-                        ` ▸ Số dư mới:   [0;36m${finalBalance.toLocaleString()}[0m Cash\n` +
+                        `\`\`\`ansi\n` +
+                        `▸ Người chơi:  ${user.username}\n` +
+                        `▸ Lựa chọn:    ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
+                        `▸ Biến động:   ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
+                        `▸ Số dư mới:   [0;36m${finalBalance.toLocaleString()}[0m Cash\n` +
                         `────────────────────────────────────\n` +
-                        ````\n` +
+                        `\`\`\`\n` +
                         `**📊 Cầu hiện tại:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
                     );
 
@@ -149,17 +140,14 @@ module.exports = {
             collector.on('end', (collected, reason) => {
                 if (reason === 'time' && collected.size === 0) {
                     const timeoutMsg = '💤 **Ván đấu đã hủy** do quý khách không thao tác.';
-                    isInteraction 
-                        ? input.editReply({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {})
-                        : response.edit({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {});
+                    isSlash ? input.editReply({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {}) 
+                            : response.edit({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {});
                 }
             });
 
         } catch (err) {
             console.error('Lỗi TaiXiu:', err);
-            if (isInteraction) {
-                if (!input.replied) input.reply({ content: '❌ Lỗi hệ thống!', ephemeral: true });
-            }
+            if (!input.replied) input.reply({ content: '❌ Casino đang bảo trì!', ephemeral: true });
         }
     }
 };
