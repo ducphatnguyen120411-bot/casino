@@ -24,7 +24,7 @@ async function deployCommands() {
     const commands = [
         require('./commands/bot_vi').data.toJSON(),
         require('./commands/bot_realestate').data.toJSON(),
-        require('./commands/bot_stock').data.toJSON(),
+        require('./commands/stock').data.toJSON()
         require('./commands/bot_race').data.toJSON(),
         require('./commands/bot_daily').data.toJSON(),
     ];
