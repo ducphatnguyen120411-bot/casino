@@ -2,15 +2,19 @@
   "name": "verdict-cash-system",
   "version": "1.1.0",
   "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "postinstall": "prisma generate"
+  },
   "dependencies": {
-    "@discordjs/rest": "^2.0.0",
+    "@discordjs/rest": "^2.2.0",
     "@prisma/client": "^5.10.0",
-    "discord-api-types": "^10.0.0",
+    "discord-api-types": "^0.37.73",
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5",
     "prisma": "^5.10.0"
   },
-  "scripts": {
-    "start": "node index.js"
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
