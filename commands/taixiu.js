@@ -3,7 +3,7 @@ const {
     ButtonBuilder, ButtonStyle, ComponentType 
 } = require('discord.js');
 
-// Lưu lịch sử phiên chạy (Nên dùng DB nếu muốn lưu vĩnh viễn)
+// Lưu lịch sử (Sẽ reset khi bot restart - Muốn vĩnh viễn nên dùng DB)
 let history = []; 
 
 module.exports = {
@@ -16,12 +16,20 @@ module.exports = {
                 .setRequired(true)
                 .setMinValue(100)),
 
-    async execute(interaction, prisma) {
-        const amount = interaction.options.getInteger('money');
-        const user = interaction.user;
+    async execute(input, prisma, args) {
+        // Tự động nhận diện Slash hoặc Prefix
+        const isInteraction = !!input.options;
+        const amount = isInteraction ? input.options.getInteger('money') : parseInt(args[0]);
+        const user = isInteraction ? input.user : input.author;
+
+        // Kiểm tra đầu vào
+        if (!amount || isNaN(amount) || amount < 100) {
+            const errorMsg = "❌ Quý khách vui lòng nhập số tiền cược hợp lệ (Tối thiểu 100)!";
+            return isInteraction ? input.reply({ content: errorMsg, ephemeral: true }) : input.reply(errorMsg);
+        }
 
         try {
-            // 1. Kiểm tra ví
+            // 1. Kiểm tra ví & Khởi tạo (Dùng upsert để đảm bảo user luôn tồn tại)
             let userData = await prisma.user.upsert({
                 where: { id: user.id },
                 update: {},
@@ -29,13 +37,11 @@ module.exports = {
             });
 
             if (userData.balance < amount) {
-                return interaction.reply({ 
-                    content: `⚠️ **Số dư không đủ!** Quý khách cần thêm \`${(amount - userData.balance).toLocaleString()}\` Cash.`, 
-                    ephemeral: true 
-                });
+                const lowMoney = `⚠️ **Số dư không đủ!** Bạn cần thêm \`${(amount - userData.balance).toLocaleString()}\` Cash.`;
+                return isInteraction ? input.reply({ content: lowMoney, ephemeral: true }) : input.reply(lowMoney);
             }
 
-            // 2. Logic Soi Cầu (Đã fix không dấu)
+            // 2. Chuẩn bị giao diện Soi Cầu
             const cauDisplay = history.length > 0 
                 ? history.slice(-10).map(res => res === 'TAI' ? '🔴' : '🔵').join(' ') 
                 : '`Chưa có dữ liệu ván đấu`';
@@ -61,7 +67,9 @@ module.exports = {
                 new ButtonBuilder().setCustomId('XIU').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Primary)
             );
 
-            const response = await interaction.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true });
+            const response = isInteraction 
+                ? await input.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true })
+                : await input.reply({ embeds: [lobbyEmbed], components: [row] });
 
             const collector = response.createMessageComponentCollector({
                 filter: i => i.user.id === user.id,
@@ -70,12 +78,17 @@ module.exports = {
             });
 
             collector.on('collect', async i => {
-                // LOCK TIỀN NGAY
-                await prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: amount } } });
+                // 3. LOCK TIỀN NGAY & Vô hiệu hóa nút (Tránh bug)
+                await i.update({ content: '⚙️ **Đang ghi nhận đặt cược...**', components: [], embeds: [] });
+                
+                await prisma.user.update({ 
+                    where: { id: user.id }, 
+                    data: { balance: { decrement: amount } } 
+                });
 
-                const userChoice = i.customId; // 'TAI' hoặc 'XIU' (Không dấu)
+                const userChoice = i.customId;
 
-                // --- HIỆU ỨNG LẮC BÁT PROGRESS BAR ---
+                // --- HIỆU ỨNG LẮC BÁT PROGRESS BAR (Mượt hơn) ---
                 const progressFrames = [
                     '✨ **Đang xốc đĩa...**\n`[▓░░░░░░░░░] 10%`',
                     '✨ **Đang xốc đĩa...**\n`[▓▓▓░░░░░░░] 35%`',
@@ -84,14 +97,14 @@ module.exports = {
                 ];
 
                 for (const frame of progressFrames) {
-                    await i.update({ content: frame, embeds: [], components: [] }).catch(() => {});
-                    await new Promise(r => setTimeout(r, 600));
+                    await i.editReply({ content: frame });
+                    await new Promise(r => setTimeout(r, 500));
                 }
 
-                // Xử lý xúc xắc
+                // 4. Xử lý kết quả
                 const d = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
                 const total = d.reduce((a, b) => a + b, 0);
-                const result = total >= 11 ? 'TAI' : 'XIU'; // Đồng bộ không dấu
+                const result = total >= 11 ? 'TAI' : 'XIU';
                 const isWin = userChoice === result;
 
                 history.push(result);
@@ -99,22 +112,23 @@ module.exports = {
 
                 let finalBalance;
                 if (isWin) {
-                    const update = await prisma.user.update({
+                    const updateWin = await prisma.user.update({
                         where: { id: user.id },
                         data: { balance: { increment: amount * 2 } }
                     });
-                    finalBalance = update.balance;
+                    finalBalance = updateWin.balance;
                 } else {
                     const current = await prisma.user.findUnique({ where: { id: user.id } });
                     finalBalance = current.balance;
                 }
 
                 const diceIcons = { 1: '⚀', 2: '⚁', 3: '⚂', 4: '⚃', 5: '⚄', 6: '⚅' };
+                const diceString = d.map(v => diceIcons[v]).join(' ');
                 
                 // --- GIAO DIỆN KẾT QUẢ SANG TRỌNG ---
                 const resultEmbed = new EmbedBuilder()
                     .setColor(isWin ? 0x2ECC71 : 0xE74C3C)
-                    .setTitle(`${isWin ? '🎊' : '💸'} Kết Quả: ${d.map(v => diceIcons[v]).join(' ')} ➜ ${total} (${result})`)
+                    .setTitle(`${isWin ? '🎊' : '💸'} Kết Quả: ${diceString} ➜ ${total} (${result})`)
                     .setDescription(
                         ````ansi\n` +
                         `[0;33m╔══════════════════════════════════╗[0m\n` +
@@ -129,18 +143,23 @@ module.exports = {
                         `**📊 Cầu hiện tại:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
                     );
 
-                await interaction.editReply({ content: null, embeds: [resultEmbed] });
+                await i.editReply({ content: null, embeds: [resultEmbed] });
             });
 
             collector.on('end', (collected, reason) => {
                 if (reason === 'time' && collected.size === 0) {
-                    interaction.editReply({ content: '💤 **Ván đấu đã hủy** do quý khách không thao tác.', embeds: [], components: [] }).catch(() => {});
+                    const timeoutMsg = '💤 **Ván đấu đã hủy** do quý khách không thao tác.';
+                    isInteraction 
+                        ? input.editReply({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {})
+                        : response.edit({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {});
                 }
             });
 
         } catch (err) {
-            console.error(err);
-            if (!interaction.replied) interaction.reply({ content: '❌ Casino bảo trì!', ephemeral: true });
+            console.error('Lỗi TaiXiu:', err);
+            if (isInteraction) {
+                if (!input.replied) input.reply({ content: '❌ Lỗi hệ thống!', ephemeral: true });
+            }
         }
     }
 };
