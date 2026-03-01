@@ -3,17 +3,19 @@ const {
     ButtonBuilder, ButtonStyle, ComponentType 
 } = require('discord.js');
 
+// Lưu lịch sử phiên chạy (Nên dùng DB nếu muốn lưu vĩnh viễn)
+let history = []; 
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('taixiu')
-        .setDescription('💎 Sòng bài Thượng lưu Verdict - Thử vận may của bạn')
+        .setDescription('💎 Sòng bài Thượng lưu - Trải nghiệm đẳng cấp')
         .addIntegerOption(opt => 
             opt.setName('money')
-                .setDescription('Số tiền đặt cược (Tối thiểu 100)')
+                .setDescription('Số tiền đặt cược')
                 .setRequired(true)
                 .setMinValue(100)),
 
-    // FIX: Truyền đúng prisma từ index.js vào
     async execute(interaction, prisma) {
         const amount = interaction.options.getInteger('money');
         const user = interaction.user;
@@ -28,113 +30,117 @@ module.exports = {
 
             if (userData.balance < amount) {
                 return interaction.reply({ 
-                    content: `❌ **Rất tiếc!** Bạn thiếu \`${(amount - userData.balance).toLocaleString()}\` Cash để theo ván này.`, 
+                    content: `⚠️ **Số dư không đủ!** Quý khách cần thêm \`${(amount - userData.balance).toLocaleString()}\` Cash.`, 
                     ephemeral: true 
                 });
             }
 
-            // 2. Giao diện sảnh chờ Luxury
+            // 2. Logic Soi Cầu (Đã fix không dấu)
+            const cauDisplay = history.length > 0 
+                ? history.slice(-10).map(res => res === 'TAI' ? '🔴' : '🔵').join(' ') 
+                : '`Chưa có dữ liệu ván đấu`';
+
             const lobbyEmbed = new EmbedBuilder()
-                .setAuthor({ name: 'VERDICT SUPREME CASINO', iconURL: 'https://i.imgur.com/8E89vXp.png' })
-                .setTitle('🎰 VÁN CƯỢC MỚI ĐANG MỞ')
                 .setColor(0xD4AF37)
+                .setTitle('⚜️ VERDICT PRESTIGE CASINO ⚜️')
                 .setThumbnail(user.displayAvatarURL())
                 .setDescription(
-                    `👋 Chào mừng quý khách **${user.username}**,\n` +
-                    `Mức cược: **\`${amount.toLocaleString()}\`** Cash.\n\n` +
-                    `┎──────────────────┒\n` +
-                    `┃   **CHỌN CỬA ĐẶT CỦA BẠN** ┃\n` +
-                    `┖──────────────────┚`
+                    ````arm\n` +
+                    `CHỦ BÀN: ${user.username.toUpperCase()}\n` +
+                    `MỨC CƯỢC: ${amount.toLocaleString()} CASH\n` +
+                    `──────────────────────────────\n` +
+                    `SOI CẦU: ${history.slice(-5).join(' - ') || 'N/A'}\n` +
+                    ````\n` +
+                    `**📊 Lịch sử ván đấu:**\n${cauDisplay}\n\n` +
+                    `*Quý khách vui lòng chọn cửa đặt...*`
                 )
-                .addFields(
-                    { name: '🔴 TÀI', value: '`11 - 18 điểm`', inline: true },
-                    { name: '🔵 XỈU', value: '`3 - 10 điểm`', inline: true }
-                )
-                .setFooter({ text: '⏳ Bạn có 15 giây để quyết định!' });
+                .setFooter({ text: '⏳ Hệ thống tự hủy sau 15s' });
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('tx_tai').setLabel('ĐẶT TÀI').setEmoji('🔴').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('tx_xiu').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('TAI').setLabel('ĐẶT TÀI').setEmoji('🔴').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('XIU').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Primary)
             );
 
             const response = await interaction.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true });
 
             const collector = response.createMessageComponentCollector({
                 filter: i => i.user.id === user.id,
-                componentType: ComponentType.Button,
                 time: 15000,
                 max: 1
             });
 
             collector.on('collect', async i => {
-                await i.deferUpdate();
-                const userChoice = i.customId === 'tx_tai' ? '🔴 TÀI' : '🔵 XỈU';
-                
-                // --- HIỆU ỨNG LẮC BÁT KỊCH TÍNH (Khôi phục) ---
-                const loadingFrames = [
-                    '┠─⚪────────┨', '┠──⚪───────┨', '┠───⚪──────┨', '┠────⚪─────┨',
-                    '┠─────⚪────┨', '┠──────⚪───┨', '┠───────⚪──┨', '┠────────⚪─┨'
+                // LOCK TIỀN NGAY
+                await prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: amount } } });
+
+                const userChoice = i.customId; // 'TAI' hoặc 'XIU' (Không dấu)
+
+                // --- HIỆU ỨNG LẮC BÁT PROGRESS BAR ---
+                const progressFrames = [
+                    '✨ **Đang xốc đĩa...**\n`[▓░░░░░░░░░] 10%`',
+                    '✨ **Đang xốc đĩa...**\n`[▓▓▓░░░░░░░] 35%`',
+                    '🎲 **Đang mở bát...**\n`[▓▓▓▓▓▓░░░░] 60%`',
+                    '🎲 **Đang mở bát...**\n`[▓▓▓▓▓▓▓▓▓▓] 100%`'
                 ];
-                let frame = 0;
 
-                const shakingInterval = setInterval(() => {
-                    interaction.editReply({ 
-                        content: `🎰 **ĐANG LẮC BÁT...**\n\`${loadingFrames[frame % loadingFrames.length]}\``, 
-                        embeds: [], components: [] 
-                    }).catch(() => clearInterval(shakingInterval));
-                    frame++;
-                }, 400);
+                for (const frame of progressFrames) {
+                    await i.update({ content: frame, embeds: [], components: [] }).catch(() => {});
+                    await new Promise(r => setTimeout(r, 600));
+                }
 
-                // --- XỬ LÝ KẾT QUẢ ---
-                setTimeout(async () => {
-                    clearInterval(shakingInterval);
+                // Xử lý xúc xắc
+                const d = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
+                const total = d.reduce((a, b) => a + b, 0);
+                const result = total >= 11 ? 'TAI' : 'XIU'; // Đồng bộ không dấu
+                const isWin = userChoice === result;
 
-                    const d = Array.from({ length: 3 }, () => Math.floor(Math.random() * 6) + 1);
-                    const total = d.reduce((a, b) => a + b, 0);
-                    const isTai = total >= 11;
-                    const winSide = isTai ? 'tx_tai' : 'tx_xiu';
-                    const isWin = i.customId === winSide;
-                    const change = isWin ? amount : -amount;
+                history.push(result);
+                if (history.length > 20) history.shift();
 
-                    const updatedUser = await prisma.user.update({
+                let finalBalance;
+                if (isWin) {
+                    const update = await prisma.user.update({
                         where: { id: user.id },
-                        data: { balance: { increment: change } }
+                        data: { balance: { increment: amount * 2 } }
                     });
+                    finalBalance = update.balance;
+                } else {
+                    const current = await prisma.user.findUnique({ where: { id: user.id } });
+                    finalBalance = current.balance;
+                }
 
-                    const diceIcons = { 1: '⚀', 2: '⚁', 3: '⚂', 4: '⚃', 5: '⚄', 6: '⚅' };
-                    const diceString = d.map(v => diceIcons[v]).join(' ');
-                    
-                    const resultEmbed = new EmbedBuilder()
-                        .setAuthor({ name: isWin ? '⚜️ CHIẾN THẮNG TUYỆT ĐỐI' : '💸 HẸN GẶP LẠI LẦN SAU' })
-                        .setColor(isWin ? 0x2ecc71 : 0xe74c3c)
-                        .setTitle(`${diceString} ➜ ${total} (${isTai ? '🔴 TÀI' : '🔵 XỈU'})`)
-                        .setDescription(
-                            `### ${isWin ? '🎊 Chúc mừng Quý khách!' : '📉 May mắn chưa mỉm cười...'}\n` +
-                            `┃ **Cửa chọn:** \`${userChoice}\`\n` +
-                            `┃ **Kết quả:** \`${isTai ? 'TÀI' : 'XỈU'}\`\n` +
-                            `┃ **Biến động:** \`${isWin ? '+' : '-'}${amount.toLocaleString()}\` Cash\n` +
-                            `┃ **Số dư mới:** \`${updatedUser.balance.toLocaleString()}\` Cash`
-                        )
-                        .setThumbnail(isWin ? 'https://i.imgur.com/u5tXJgX.png' : 'https://i.imgur.com/7S8Y8fS.png')
-                        .setTimestamp();
+                const diceIcons = { 1: '⚀', 2: '⚁', 3: '⚂', 4: '⚃', 5: '⚄', 6: '⚅' };
+                
+                // --- GIAO DIỆN KẾT QUẢ SANG TRỌNG ---
+                const resultEmbed = new EmbedBuilder()
+                    .setColor(isWin ? 0x2ECC71 : 0xE74C3C)
+                    .setTitle(`${isWin ? '🎊' : '💸'} Kết Quả: ${d.map(v => diceIcons[v]).join(' ')} ➜ ${total} (${result})`)
+                    .setDescription(
+                        ````ansi\n` +
+                        `[0;33m╔══════════════════════════════════╗[0m\n` +
+                        `  [1;37mTHÔNG TIN VÁN ĐẤU[0m\n` +
+                        `[0;33m╚══════════════════════════════════╝[0m\n` +
+                        ` ▸ Người chơi:  ${user.username}\n` +
+                        ` ▸ Lựa chọn:    ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
+                        ` ▸ Biến động:   ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
+                        ` ▸ Số dư mới:   [0;36m${finalBalance.toLocaleString()}[0m Cash\n` +
+                        `────────────────────────────────────\n` +
+                        ````\n` +
+                        `**📊 Cầu hiện tại:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
+                    );
 
-                    await interaction.editReply({ 
-                        content: isWin ? `🏆 **${user.username}** vừa thắng lớn!` : `🍿 Chia buồn cùng **${user.username}**!`, 
-                        embeds: [resultEmbed] 
-                    });
-
-                }, 4000); 
+                await interaction.editReply({ content: null, embeds: [resultEmbed] });
             });
 
             collector.on('end', (collected, reason) => {
                 if (reason === 'time' && collected.size === 0) {
-                    interaction.editReply({ content: '⏰ Hết thời gian đặt cược!', embeds: [], components: [] }).catch(() => {});
+                    interaction.editReply({ content: '💤 **Ván đấu đã hủy** do quý khách không thao tác.', embeds: [], components: [] }).catch(() => {});
                 }
             });
 
         } catch (err) {
             console.error(err);
-            if (!interaction.replied) interaction.reply({ content: '❌ Casino đang bảo trì!', ephemeral: true });
+            if (!interaction.replied) interaction.reply({ content: '❌ Casino bảo trì!', ephemeral: true });
         }
     }
 };
