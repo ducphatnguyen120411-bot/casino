@@ -4,20 +4,20 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite" // Hoặc "postgresql" nếu ông dùng database online
-  url      = env("DATABASE_URL")
+  provider = "sqlite"
+  // Sửa dòng này để nhận biến môi trường
+  url      = env("DATABASE_URL") 
 }
 
 // 2. BẢNG NGƯỜI DÙNG (USER)
 model User {
   id         String   @id
-  balance    Int      @default(1000)   // Tiền mặt
-  msgCount   Int      @default(0)      // Đếm tin nhắn (Nhiệm vụ)
-  totalWins  Int      @default(0)      // Thống kê thắng đua ngựa
-  lastDaily  DateTime?                 // Lưu thời gian nhận quà hàng ngày
+  balance    Int      @default(1000)
+  msgCount   Int      @default(0)
+  totalWins  Int      @default(0)
+  lastDaily  DateTime?
   createdAt  DateTime @default(now())
   
-  // Quan hệ: Một người có thể có nhiều nhà
   houses     House[]
 
   @@index([id])
@@ -27,34 +27,23 @@ model User {
 model House {
   id           String   @id @default(uuid())
   ownerId      String
-  channelId    String   @unique // ID Voice Channel tương ứng
+  channelId    String   @unique
   name         String
-  rarity       String   // Độ hiếm (Bình dân, Cực hiếm, Huyền thoại)
+  rarity       String
   multiplier   Float    @default(1.0)
   currentValue Int      @default(50000)
   level        Int      @default(1)
   
-  // Quan hệ: Thuộc về 1 User, nếu xóa User thì xóa luôn nhà (Cascade)
   owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([ownerId])
   @@index([channelId])
 }
 
-// 4. BẢNG THỊ TRƯỜNG CHỨNG KHOÁN (MARKET)
+// 4. BẢNG THỊ TRƯỜNG (MARKET)
 model Market {
-  id        Int      @id @default(1) // Luôn cố định ID = 1
+  id        Int      @id @default(1)
   price     Float    @default(100.0)
-  history   String   @default("[]")  // Lưu mảng giá lịch sử dưới dạng chuỗi JSON
+  history   String   @default("[]")
   updatedAt DateTime @updatedAt
-}
-
-// 5. BẢNG NHẬT KÝ GIAO DỊCH (Tùy chọn - Để Admin dễ kiểm soát)
-model Transaction {
-  id        String   @id @default(cuid())
-  userId    String
-  amount    Int
-  type      String   // "NAP", "TRU", "BUY_HOUSE", "RACE"
-  reason    String?
-  createdAt DateTime @default(now())
 }
