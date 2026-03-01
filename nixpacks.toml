@@ -2,7 +2,10 @@
 nixPkgs = ["nodejs", "python"]
 
 [phases.build]
-cmds = ["npm install", "npx prisma generate"]
+cmds = [
+    "npm install",
+    "npx prisma generate"
+]
 
 [start]
-cmd = "npm start"
+cmd = "npx prisma db push && node index.js"
