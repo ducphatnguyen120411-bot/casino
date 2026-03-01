@@ -1,6 +1,6 @@
-const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
 const { PrismaClient } = require('@prisma/client');
-const fs = require('fs'); // Thêm để kiểm tra file tồn tại
+const fs = require('fs');
 require('dotenv').config();
 
 const client = new Client({
@@ -13,20 +13,21 @@ const client = new Client({
 });
 
 const prisma = new PrismaClient();
+const voiceTimers = new Map();
 
-// --- 1. ĐĂNG KÝ LỆNH SLASH (Chống crash khi thiếu file) ---
+// --- 1. ĐĂNG KÝ LỆNH SLASH (Chỉ đăng ký những gì đang có) ---
 async function deployCommands() {
     if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
-        return console.error('❌ Thiếu biến môi trường CLIENT_ID hoặc TOKEN');
+        return console.error('❌ Thiếu DISCORD_TOKEN hoặc CLIENT_ID trong Variables');
     }
 
+    // Danh sách chuẩn theo ảnh cấu trúc thư mục của ông
     const commandFiles = [
         './commands/bot_vi',
         './commands/bot_realestate',
         './commands/stock',
         './commands/bot_race',
-        './commands/bot_daily',
-        './commands/tasks' // File gây lỗi ở ảnh image_ce7d73.png
+        './commands/bot_daily'
     ];
 
     const commands = [];
@@ -35,11 +36,9 @@ async function deployCommands() {
             if (fs.existsSync(`${path}.js`)) {
                 const cmd = require(path);
                 if (cmd.data) commands.push(cmd.data.toJSON());
-            } else {
-                console.warn(`⚠️ Bỏ qua: Không tìm thấy file ${path}.js`);
             }
         } catch (e) {
-            console.error(`❌ Lỗi khi load ${path}:`, e.message);
+            console.error(`❌ Lỗi load ${path}:`, e.message);
         }
     }
 
@@ -53,7 +52,7 @@ async function deployCommands() {
     }
 }
 
-// --- 2. CẬP NHẬT THỊ TRƯỜNG (Fix lỗi No tables) ---
+// --- 2. TỰ ĐỘNG CẬP NHẬT THỊ TRƯỜNG (Mỗi 5 phút) ---
 setInterval(async () => {
     try {
         const market = await prisma.market.upsert({
@@ -61,22 +60,53 @@ setInterval(async () => {
             update: {}, 
             create: { id: 1, price: 100.0, history: [100.0] }
         });
-        // ... logic cập nhật giá ...
+
+        const change = (Math.random() * 4 - 2); 
+        const newPrice = Math.max(10, market.price + (market.price * (change / 100)));
+        let history = Array.isArray(market.history) ? market.history : [];
+        
+        history.push(parseFloat(newPrice.toFixed(2)));
+        if (history.length > 20) history.shift();
+
+        await prisma.market.update({
+            where: { id: 1 },
+            data: { price: newPrice, history: history }
+        });
+        console.log(`📈 Giá thị trường: ${newPrice.toFixed(2)} VCASH`);
     } catch (e) {
-        console.error('❌ Lỗi DB: Kiểm tra lại DATABASE_URL (P1001)');
+        console.error('❌ Lỗi DB (Kiểm tra DATABASE_URL):', e.message);
     }
 }, 300000); 
 
-// --- 3. XỬ LÝ INTERACTION ---
+// --- 3. XỬ LÝ TIN NHẮN & NHIỆM VỤ ---
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+
+    // Lệnh Prefix !vi
+    if (message.content.toLowerCase().startsWith('!vi')) {
+        try {
+            const vi = require('./commands/bot_vi');
+            return vi.execute(message, prisma);
+        } catch (e) { console.error(e); }
+    }
+
+    // Đếm tin nhắn và tạo User nếu chưa có
+    try {
+        await prisma.user.upsert({
+            where: { id: message.author.id },
+            update: { msgCount: { increment: 1 } },
+            create: { id: message.author.id, balance: 1000, msgCount: 1 }
+        });
+    } catch (e) { console.error('❌ Lỗi lưu User:', e.message); }
+});
+
+// --- 4. XỬ LÝ LỆNH SLASH ---
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-    
-    // Tự động tìm file tương ứng với tên lệnh
+
     const cmdName = interaction.commandName;
     let fileName = `./commands/bot_${cmdName}.js`;
-    
-    // Ngoại lệ cho các file không có tiền tố bot_
-    if (cmdName === 'tasks' || cmdName === 'stock') fileName = `./commands/${cmdName}.js`;
+    if (cmdName === 'stock') fileName = `./commands/stock.js`;
 
     try {
         if (fs.existsSync(fileName)) {
