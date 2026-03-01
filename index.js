@@ -14,19 +14,19 @@ const client = new Client({
 const prisma = new PrismaClient();
 const voiceTimers = new Map();
 
-// --- TỰ ĐỘNG ĐĂNG KÝ LỆNH SLASH ---
+// --- 1. ĐĂNG KÝ LỆNH SLASH (Fix lỗi toJSON) ---
 async function deployCommands() {
     if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
-        return console.error('❌ Thiếu DISCORD_TOKEN hoặc CLIENT_ID trong tab Variables của Railway');
+        return console.error('❌ Thiếu DISCORD_TOKEN hoặc CLIENT_ID trong Variables');
     }
 
     const commands = [
         require('./commands/bot_vi').data.toJSON(),
         require('./commands/bot_realestate').data.toJSON(),
-        require('./commands/stock').data.toJSON(), // Đã khớp với file stock ông gửi
+        require('./commands/stock').data.toJSON(),
         require('./commands/bot_race').data.toJSON(),
         require('./commands/bot_daily').data.toJSON(),
-        require('./commands/tasks').data.toJSON(), // Đã thêm lệnh tasks mới sửa
+        require('./commands/tasks').data.toJSON(),
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -39,14 +39,14 @@ async function deployCommands() {
     }
 }
 
-// --- CẬP NHẬT GIÁ THỊ TRƯỜNG (Fix lỗi "No tables") ---
+// --- 2. CẬP NHẬT THỊ TRƯỜNG AN TOÀN (Fix lỗi "No tables") ---
 setInterval(async () => {
     try {
-        // Sử dụng upsert để đảm bảo ID 1 luôn tồn tại, tránh crash khi DB trống
+        // Sử dụng upsert để tự tạo dữ liệu Market nếu DB trống
         const market = await prisma.market.upsert({
             where: { id: 1 },
             update: {}, 
-            create: { id: 1, price: 100.0, history: [100, 101, 99, 102] }
+            create: { id: 1, price: 100.0, history: [100.0] }
         });
 
         const change = (Math.random() * 4 - 2); 
@@ -60,69 +60,49 @@ setInterval(async () => {
             where: { id: 1 },
             data: { price: newPrice, history: history }
         });
-        console.log(`📈 Cập nhật giá thị trường: ${newPrice.toFixed(2)} VCASH`);
+        console.log(`📈 Giá thị trường: ${newPrice.toFixed(2)} VCASH`);
     } catch (e) {
-        console.error('❌ Lỗi cập nhật thị trường:', e.message);
+        console.error('❌ Lỗi DB Thị trường (P1001/No Table):', e.message);
     }
 }, 300000); 
 
-// --- SỰ KIỆN MESSAGE (PREFIX & NHIỆM VỤ) ---
+// --- 3. XỬ LÝ TIN NHẮN & NHIỆM VỤ ---
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // Lệnh Prefix !vi
     if (message.content.toLowerCase().startsWith('!vi')) {
         try {
-            const command = require('./commands/bot_vi');
-            return command.execute(message, prisma);
+            return require('./commands/bot_vi').execute(message, prisma);
         } catch (e) { console.error(e); }
     }
 
-    // Tự động đếm tin nhắn và Reset nhiệm vụ ngày
     try {
-        const user = await prisma.user.upsert({
+        await prisma.user.upsert({
             where: { id: message.author.id },
             update: { msgCount: { increment: 1 } },
             create: { id: message.author.id, balance: 1000, msgCount: 1 }
         });
-
-        const today = new Date().toDateString();
-        if (user.updatedAt && user.updatedAt.toDateString() !== today) {
-            await prisma.user.update({
-                where: { id: message.author.id },
-                data: { msgCount: 1, hasWonToday: false, claimedChatter: false, claimedWin: false }
-            });
-        }
-    } catch (e) { console.error('❌ Lỗi DB (Message):', e.message); }
+    } catch (e) { console.error('❌ Lỗi lưu User:', e.message); }
 });
 
-// --- XỬ LÝ INTERACTION (SLASH & BUTTON) ---
+// --- 4. XỬ LÝ INTERACTION (SLASH & BUTTON) ---
 client.on('interactionCreate', async (interaction) => {
-    // 1. Xử lý Slash Command
     if (interaction.isChatInputCommand()) {
         try {
-            const commandName = interaction.commandName === 'tasks' ? 'tasks' : `bot_${interaction.commandName}`;
-            const command = require(`./commands/${commandName}`);
-            await command.execute(interaction, prisma);
+            const cmdName = interaction.commandName === 'tasks' ? 'tasks' : `bot_${interaction.commandName}`;
+            await require(`./commands/${cmdName}`).execute(interaction, prisma);
         } catch (error) {
-            console.error('❌ Lỗi thực thi Slash:', error);
-            if (!interaction.replied) await interaction.reply({ content: '❌ Lỗi hệ thống!', ephemeral: true });
+            console.error('❌ Lỗi thực thi:', error);
         }
     }
 
-    // 2. Xử lý Button (Dành cho lệnh !tasks)
-    if (interaction.isButton()) {
-        if (interaction.customId.startsWith('claim_tasks')) {
-            const userId = interaction.customId.split('_')[2];
-            if (interaction.user.id !== userId) {
-                return interaction.reply({ content: '❌ Đây không phải bảng nhiệm vụ của bạn!', ephemeral: true });
-            }
-            // Gọi lại file tasks để xử lý logic claim
-            const tasksCmd = require('./commands/tasks');
-            // Giả lập interaction để chạy logic claim
-            interaction.options = { getString: () => 'claim' }; 
-            await tasksCmd.execute(interaction, prisma);
-        }
+    // Xử lý nút bấm từ lệnh !tasks
+    if (interaction.isButton() && interaction.customId.startsWith('claim_tasks')) {
+        const userId = interaction.customId.split('_')[2];
+        if (interaction.user.id !== userId) return interaction.reply({ content: '❌ Không phải bảng của bạn!', ephemeral: true });
+        
+        interaction.options = { getString: () => 'claim' }; 
+        await require('./commands/tasks').execute(interaction, prisma);
     }
 });
 
