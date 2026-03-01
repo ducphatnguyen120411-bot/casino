@@ -9,24 +9,29 @@ generator client {
 
 model User {
   id              String    @id // Discord User ID
-  balance         Float     @default(1000)
+  balance         Float     @default(1000) // Số dư Verdict Cash khởi tạo
   
-  // Hệ thống Nhiệm vụ & Daily
+  // --- HỆ THỐNG NHIỆM VỤ (DAILY TASKS) ---
   lastDaily       DateTime? @default(dbgenerated("'1970-01-01 00:00:00'"))
-  msgCount        Int       @default(0)       // Đếm tin nhắn trong ngày
-  claimedChatter  Boolean   @default(false)   // Trạng thái nhận thưởng nhiệm vụ chat
-  hasWonToday     Boolean   @default(false)   // Trạng thái đã thắng ván game nào chưa
-  claimedWin      Boolean   @default(false)   // Trạng thái nhận thưởng nhiệm vụ thắng game
+  msgCount        Int       @default(0)       // Đếm số tin nhắn trong ngày
+  claimedChatter  Boolean   @default(false)   // Đã nhận thưởng "Người nói nhiều" chưa?
+  hasWonToday     Boolean   @default(false)   // Đã thắng ván game nào hôm nay chưa?
+  claimedWin      Boolean   @default(false)   // Đã nhận thưởng "Thần bài" chưa?
+
+  // --- HỆ THỐNG KINH TẾ ---
+  stocks          Json?     // Lưu trữ cổ phiếu sở hữu. Ví dụ: { "AAPL": 10, "SERVER": 5 }
+  properties      Json?     // Lưu trữ BĐS Voice. Ví dụ: { "VIP_Room": 1 }
   
-  // Hệ thống Kinh tế & Tài sản
-  stocks          Json?     // Lưu trữ cổ phiếu sở hữu { "AAPL": 10 }
-  properties      Json?     // Lưu trữ BĐS { "Penthouse": 1 }
+  // --- MINI GAMES & LOGS ---
+  lastReaction    DateTime? // Thời điểm chơi game phản xạ gần nhất
+  totalWins       Int       @default(0)       // Tổng số trận thắng (để làm BXH)
   
-  // Mini games
-  lastReaction    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
 model Market {
-  id     Int    @id @default(1)
-  stocks Json   // { "AAPL": 150.5, "VCASH": 10.0 }
+  id        Int      @id @default(1)
+  stocks    Json     // Giá cổ phiếu biến động. Ví dụ: { "AAPL": 150.2, "VCASH": 10.5 }
+  updatedAt DateTime @updatedAt
 }
