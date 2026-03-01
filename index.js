@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, REST, Routes, Collection, Events } = require('discord.js');
 const { PrismaClient } = require('@prisma/client');
 const fs = require('fs');
+const path = require('path'); // Thêm path để quản lý đường dẫn chuẩn hơn
 require('dotenv').config();
 
 const client = new Client({
@@ -8,16 +9,23 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildVoiceStates // Bắt buộc để chạy BĐS Voice
     ]
 });
 
 const prisma = new PrismaClient();
 client.commands = new Collection();
 
-// --- 1. LOAD SLASH COMMANDS ---
+// --- 1. LOAD COMMANDS (SLASH & MODULES) ---
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
 const commandsJSON = [];
+
+// Pre-load các module prefix để tối ưu hiệu năng
+const prefixModules = {
+    admin: fs.existsSync('./commands/admin.js') ? require('./commands/admin.js') : null,
+    vi: fs.existsSync('./commands/bot_vi.js') ? require('./commands/bot_vi.js') : null,
+    daily: fs.existsSync('./commands/bot_daily.js') ? require('./commands/bot_daily.js') : null
+};
 
 for (const file of commandFiles) {
     const command = require(`./commands/${file}`);
@@ -27,58 +35,65 @@ for (const file of commandFiles) {
     }
 }
 
-// --- 2. XỬ LÝ LỆNH PREFIX (!nap, !tru, !pay, !vi, !daily) ---
+// --- 2. VOICE STATE UPDATER (Dành cho Bất Động Sản) ---
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+    const realEstate = client.commands.get('realestate');
+    if (realEstate && realEstate.handleVoice) {
+        // Chạy ngầm để không block các tiến trình khác
+        realEstate.handleVoice(oldState, newState, prisma).catch(e => console.error('❌ Lỗi Voice BĐS:', e));
+    }
+});
+
+// --- 3. XỬ LÝ MESSAGE (PREFIX COMMANDS) ---
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // Chat to Earn & Tự động tạo User
-    await prisma.user.upsert({
-        where: { id: message.author.id },
-        update: { msgCount: { increment: 1 } },
-        create: { id: message.author.id, balance: 1000, msgCount: 1 }
-    }).catch(e => console.error('Lỗi DB User:', e.message));
+    // Chat to Earn & Tự động tạo User (Dùng catch để tránh treo bot)
+    try {
+        await prisma.user.upsert({
+            where: { id: message.author.id },
+            update: { msgCount: { increment: 1 } },
+            create: { id: message.author.id, balance: 1000, msgCount: 1 }
+        });
+    } catch (e) { console.error('Lỗi DB User:', e.message); }
 
     if (!message.content.startsWith('!')) return;
 
     const args = message.content.slice(1).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
+    const commandName = args.shift().toLowerCase();
 
     try {
-        // Fix lỗi MODULE_NOT_FOUND bằng cách trỏ đúng vào thư mục commands
-        if (['nap', 'tru', 'pay'].includes(command)) {
-            const adminModule = require('./commands/admin.js');
-            return await adminModule.execute(message, prisma, args, command);
+        if (['nap', 'tru', 'pay'].includes(commandName) && prefixModules.admin) {
+            return await prefixModules.admin.execute(message, prisma, args, commandName);
         }
-
-        if (command === 'vi') {
-            const vi = require('./commands/bot_vi.js');
-            return await vi.execute(message, prisma);
+        if (commandName === 'vi' && prefixModules.vi) {
+            return await prefixModules.vi.execute(message, prisma);
         }
-
-        if (command === 'daily') {
-            const daily = require('./commands/bot_daily.js');
-            return await daily.execute(message, prisma);
+        if (commandName === 'daily' && prefixModules.daily) {
+            return await prefixModules.daily.execute(message, prisma);
         }
     } catch (e) {
-        console.error(`❌ Lỗi thực thi lệnh !${command}:`, e.message);
+        console.error(`❌ Lỗi lệnh !${commandName}:`, e.message);
     }
 });
 
-// --- 3. XỬ LÝ SLASH INTERACTION (Lệnh /) ---
+// --- 4. XỬ LÝ SLASH INTERACTION (Lệnh /) ---
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
+
     try {
-        // Truyền prisma vào để fix lỗi undefined findUnique
         await command.execute(interaction, prisma);
     } catch (error) {
-        console.error(error);
-        if (!interaction.replied) await interaction.reply({ content: '❌ Có lỗi xảy ra!', ephemeral: true });
+        console.error(`❌ Lỗi lệnh /${interaction.commandName}:`, error);
+        const errorMsg = { content: '❌ Có lỗi xảy ra khi thực thi lệnh!', ephemeral: true };
+        if (interaction.deferred || interaction.replied) await interaction.editReply(errorMsg);
+        else await interaction.reply(errorMsg);
     }
 });
 
-// --- 4. CẬP NHẬT THỊ TRƯỜNG (Fix lỗi 'history' Invalid value) ---
+// --- 5. HỆ THỐNG THỊ TRƯỜNG (MARKET) ---
 setInterval(async () => {
     try {
         const market = await prisma.market.findUnique({ where: { id: 1 } });
@@ -87,7 +102,6 @@ setInterval(async () => {
         const change = (Math.random() * 4 - 2); 
         const newPrice = Math.max(10, oldPrice + (oldPrice * (change / 100)));
         
-        // Luôn đảm bảo history là một mảng trước khi stringify
         let history = [];
         if (market && market.history) {
             try { 
@@ -100,26 +114,31 @@ setInterval(async () => {
 
         await prisma.market.upsert({
             where: { id: 1 },
-            update: { 
-                price: newPrice, 
-                history: JSON.stringify(history) // Fix: Chuyển về String để DB không báo lỗi
-            },
-            create: { 
-                id: 1, 
-                price: newPrice, 
-                history: JSON.stringify(history) 
-            }
+            update: { price: newPrice, history: JSON.stringify(history) },
+            create: { id: 1, price: newPrice, history: JSON.stringify(history) }
         });
-        console.log(`📈 Market Update: ${newPrice.toFixed(2)} VCASH`);
+        console.log(`📈 [MARKET] Updated: ${newPrice.toFixed(2)} VCASH`);
     } catch (e) { console.error('❌ Lỗi Market:', e.message); }
 }, 300000);
 
-client.once('ready', () => {
+// --- 6. KHỞI CHẠY BOT ---
+client.once('ready', async () => {
     console.log(`✅ Bot Online: ${client.user.tag}`);
+    
+    // Đăng ký Slash Commands
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commandsJSON })
-        .then(() => console.log('✅ Đã đồng bộ Slash Commands'))
-        .catch(console.error);
+    try {
+        await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: commandsJSON }
+        );
+        console.log('✅ Đã đồng bộ Slash Commands thành công!');
+    } catch (error) {
+        console.error('❌ Lỗi đồng bộ Slash Commands:', error);
+    }
 });
+
+// Chống crash bot khi gặp lỗi không mong muốn
+process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
 
 client.login(process.env.DISCORD_TOKEN);
