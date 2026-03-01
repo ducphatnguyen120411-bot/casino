@@ -13,10 +13,10 @@ const client = new Client({
 });
 
 const prisma = new PrismaClient();
-const voiceSessions = new Map(); // Lưu thời gian vào voice
-client.commands = new Collection(); // Lưu trữ Slash Commands
+const voiceSessions = new Map();
+client.commands = new Collection();
 
-// --- 1. TỰ ĐỘNG LOAD SLASH COMMANDS ---
+// --- 1. LOAD SLASH COMMANDS ---
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
 const commandsJSON = [];
 
@@ -28,123 +28,83 @@ for (const file of commandFiles) {
     }
 }
 
-// --- 2. ĐĂNG KÝ SLASH COMMANDS VỚI DISCORD ---
-async function deployCommands() {
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    try {
-        console.log('🔄 Đang đồng bộ Slash Commands...');
-        await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commandsJSON });
-        console.log('✅ Đã đồng bộ tất cả lệnh!');
-    } catch (e) {
-        console.error('❌ Lỗi đăng ký lệnh:', e);
-    }
-}
-
-// --- 3. XỬ LÝ LỆNH ADMIN (!nap, !tru) & MESSAGE ---
+// --- 2. XỬ LÝ MESSAGE (!nap, !tru, !pay, !vi, !daily) ---
 const ADMIN_ROLE_ID = '1465374336214106237';
 
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    const args = message.content.trim().split(/ +/);
-    const prefix = args.shift().toLowerCase();
-
-    // Logic Admin (!nap, !tru)
-    if (['!nap', '!tru'].includes(prefix) && message.member.roles.cache.has(ADMIN_ROLE_ID)) {
-        try {
-            const adminCmd = require('./commands/admin_logic.js'); // File logic admin tách riêng cho sạch
-            return adminCmd.execute(message, prisma, prefix === '!nap' ? 'add' : 'sub');
-        } catch (e) { console.error('Lỗi lệnh Admin:', e); }
-    }
-
-    // Tự động tạo User/Tăng msgCount
+    // Chat to Earn & Auto Create User
     await prisma.user.upsert({
         where: { id: message.author.id },
         update: { msgCount: { increment: 1 } },
         create: { id: message.author.id, balance: 1000, msgCount: 1 }
     }).catch(e => console.error('Lỗi DB User:', e.message));
+
+    if (!message.content.startsWith('!')) return;
+
+    const args = message.content.slice(1).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+
+    // Phân luồng lệnh Tiền tệ (Gộp Admin & Pay)
+    if (['nap', 'tru', 'pay'].includes(command)) {
+        try {
+            const adminModule = require('./commands/admin.js');
+            return await adminModule.execute(message, prisma, args, command);
+        } catch (e) { console.error('Lỗi module admin:', e); }
+    }
+
+    // Phân luồng lệnh Cá nhân
+    if (command === 'vi') {
+        const vi = require('./commands/bot_vi.js');
+        return await vi.execute(message, prisma);
+    }
+    if (command === 'daily') {
+        const daily = require('./commands/bot_daily.js');
+        return await daily.execute(message, prisma);
+    }
 });
 
-// --- 4. XỬ LÝ SLASH INTERACTION ---
+// --- 3. XỬ LÝ SLASH INTERACTION ---
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
-
     try {
         await command.execute(interaction, prisma);
     } catch (error) {
         console.error(error);
-        if (!interaction.replied) await interaction.reply({ content: '❌ Lỗi thực thi lệnh!', ephemeral: true });
+        if (!interaction.replied) await interaction.reply({ content: '❌ Lỗi thực thi!', ephemeral: true });
     }
 });
 
-// --- 5. HỆ THỐNG VOICE INCOME (Kiếm tiền từ BĐS) ---
-client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-    const userId = newState.id;
-
-    // Khi vào voice
-    if (!oldState.channelId && newState.channelId) {
-        voiceSessions.set(userId, Date.now());
-    }
-
-    // Khi rời voice
-    if (oldState.channelId && !newState.channelId) {
-        const joinTime = voiceSessions.get(userId);
-        if (!joinTime) return;
-
-        const durationMins = Math.floor((Date.now() - joinTime) / 60000);
-        voiceSessions.delete(userId);
-
-        if (durationMins < 1) return;
-
-        // Kiểm tra xem kênh này có phải là Nhà của ai đó không
-        const house = await prisma.house.findUnique({ where: { channelId: oldState.channelId } });
-        if (house) {
-            const earn = Math.floor(durationMins * 25 * house.multiplier);
-            await prisma.user.update({
-                where: { id: userId },
-                data: { balance: { increment: earn } }
-            });
-
-            // Nếu chủ nhà treo máy, nhà tăng giá trị
-            if (house.ownerId === userId) {
-                await prisma.house.update({
-                    where: { id: house.id },
-                    data: { currentValue: { increment: Math.floor(earn * 0.3) } }
-                });
-            }
-        }
-    }
-});
-
-// --- 6. CẬP NHẬT THỊ TRƯỜNG CHỨNG KHOÁN (5 Phút) ---
+// --- 4. CẬP NHẬT THỊ TRƯỜNG (Sửa lỗi history) ---
 setInterval(async () => {
     try {
-        const market = await prisma.market.upsert({
-            where: { id: 1 },
-            update: {},
-            create: { id: 1, price: 100.0, history: [100.0] }
-        });
-
+        const market = await prisma.market.findUnique({ where: { id: 1 } });
+        const oldPrice = market ? market.price : 100.0;
         const change = (Math.random() * 4 - 2); 
-        const newPrice = Math.max(10, market.price + (market.price * (change / 100)));
-        let history = Array.isArray(market.history) ? market.history : [];
+        const newPrice = Math.max(10, oldPrice + (oldPrice * (change / 100)));
+        
+        let history = market && market.history ? JSON.parse(market.history) : [100.0];
         history.push(parseFloat(newPrice.toFixed(2)));
         if (history.length > 20) history.shift();
 
-        await prisma.market.update({
+        await prisma.market.upsert({
             where: { id: 1 },
-            data: { price: newPrice, history: history }
+            update: { price: newPrice, history: JSON.stringify(history) },
+            create: { id: 1, price: newPrice, history: JSON.stringify(history) }
         });
-        console.log(`📈 Thị trường cập nhật: ${newPrice.toFixed(2)} VCASH`);
-    } catch (e) { console.error('Lỗi Market:', e.message); }
+        console.log(`📈 Market: ${newPrice.toFixed(2)}`);
+    } catch (e) { console.error('Market Error:', e.message); }
 }, 300000);
 
 client.once('ready', () => {
-    console.log(`✅ Đã đăng nhập: ${client.user.tag}`);
-    deployCommands();
+    console.log(`✅ ${client.user.tag} Online!`);
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commandsJSON })
+        .then(() => console.log('✅ Đã đồng bộ Slash Commands'))
+        .catch(console.error);
 });
 
 client.login(process.env.DISCORD_TOKEN);
