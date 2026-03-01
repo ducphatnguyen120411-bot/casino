@@ -1,175 +1,135 @@
-const { 
-    SlashCommandBuilder, EmbedBuilder, ChannelType, 
-    PermissionFlagsBits, ActionRowBuilder, StringSelectMenuBuilder 
-} = require('discord.js');
-
-const voiceSession = new Map();
+const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 
 module.exports = {
     data: new SlashCommandBuilder()
-        .setName('realestate')
-        .setDescription('🏰 Hệ thống Chuỗi Bất động sản Voice Premium')
+        .setName('stock')
+        .setDescription('📈 Sàn chứng khoán tập trung Verdict (VSE)')
+        .addSubcommand(sub => 
+            sub.setName('view')
+            .setDescription('Xem bảng giá và biểu đồ')
+            .addStringOption(opt => opt.setName('symbol').setDescription('Mã: VCASH, BTC, GOLD, TSLA...').setRequired(false)))
         .addSubcommand(sub => 
             sub.setName('buy')
-                .setDescription('🏢 Đầu tư bất động sản mới (Giá: 50,000 Cash)')
-                .addStringOption(opt => opt.setName('name').setDescription('Đặt tên cho căn hộ của bạn').setRequired(true).setMaxLength(30)))
-        .addSubcommand(sub => sub.setName('info').setDescription('📋 Xem danh mục đầu tư'))
-        .addSubcommand(sub => sub.setName('upgrade').setDescription('🛠️ Nâng cấp cơ sở hạ tầng'))
-        .addSubcommand(sub => sub.setName('sell').setDescription('💰 Thanh lý bất động sản (70% giá trị)')),
+            .setDescription('Mua cổ phiếu')
+            .addStringOption(opt => opt.setName('symbol').setRequired(true).setDescription('Mã niêm yết'))
+            .addIntegerOption(opt => opt.setName('qty').setRequired(true).setDescription('Số lượng mua')))
+        .addSubcommand(sub => 
+            sub.setName('sell')
+            .setDescription('Bán cổ phiếu')
+            .addStringOption(opt => opt.setName('symbol').setRequired(true).setDescription('Mã niêm yết'))
+            .addIntegerOption(opt => opt.setName('qty').setRequired(true).setDescription('Số lượng bán'))),
 
-    async execute(interaction, prisma) {
-        const { options, user, guild } = interaction;
-        const sub = options.getSubcommand();
+    async execute(interaction) {
+        // LẤY PRISMA TỪ CLIENT (Quan trọng để fix lỗi undefined)
+        const { prisma } = interaction.client; 
+        if (!prisma) return interaction.reply({ content: "❌ Lỗi hệ thống: Không tìm thấy kết nối Database!", ephemeral: true });
 
-        try {
-            // 1. Kiểm tra/Tạo User
-            let userData = await prisma.user.upsert({
-                where: { id: user.id },
-                update: {},
-                create: { id: user.id, balance: 100000, msgCount: 0 }
+        await interaction.deferReply();
+
+        const userAuth = interaction.user;
+        const subcommand = interaction.options.getSubcommand();
+        const symbol = interaction.options.getString('symbol')?.toUpperCase() || 'VCASH';
+        const qty = interaction.options.getInteger('qty');
+
+        // 1. DỮ LIỆU CỔ PHIẾU
+        let stock = await prisma.stock.findUnique({ where: { symbol } });
+        
+        if (!stock) {
+            const defaults = {
+                'VCASH': { name: 'Verdict Cash Coin', price: 100 },
+                'BTC': { name: 'Bitcoin Digital', price: 55000 },
+                'GOLD': { name: 'SJC Gold Bar', price: 2400 },
+                'TSLA': { name: 'Tesla Inc', price: 180 }
+            };
+            const def = defaults[symbol];
+            if (!def) return interaction.editReply(`❌ Mã **${symbol}** không tồn tại trên sàn!`);
+            
+            stock = await prisma.stock.create({
+                data: { symbol, name: def.name, price: def.price, history: JSON.stringify([def.price]) }
+            });
+        }
+
+        // 2. DỮ LIỆU USER
+        let userData = await prisma.user.findUnique({ where: { id: userAuth.id } });
+        if (!userData) {
+            userData = await prisma.user.create({ data: { id: userAuth.id, balance: 5000, stocks: "{}" } });
+        }
+
+        let portfolio = {};
+        try { portfolio = JSON.parse(userData.stocks || "{}"); } catch(e) { portfolio = {}; }
+        const owned = portfolio[symbol] || 0;
+
+        // --- LỆNH VIEW ---
+        if (subcommand === 'view') {
+            let history = [];
+            try { history = JSON.parse(stock.history || "[]"); } catch(e) { history = [stock.price]; }
+            
+            const currentPrice = stock.price;
+            const openPrice = history[0] || currentPrice;
+            const diff = currentPrice - openPrice;
+            const diffPct = ((diff / openPrice) * 100).toFixed(2);
+            const color = diff >= 0 ? 0x00FF7F : 0xFF4757;
+
+            const visualChart = createVisualChart(history.slice(-20));
+
+            const embed = new EmbedBuilder()
+                .setTitle(`${diff >= 0 ? '📈' : '📉'} THỊ TRƯỜNG: ${stock.symbol}`)
+                .setDescription(`**${stock.name}**`)
+                .setColor(color)
+                .addFields(
+                    { name: '💰 Giá khớp lệnh', value: `\`${currentPrice.toLocaleString()}\` VCASH`, inline: true },
+                    { name: '📊 Biến động (24h)', value: `\`${diff >= 0 ? '+' : ''}${diffPct}%\``, inline: true },
+                    { name: '💳 Ví của bạn', value: `\`${userData.balance.toLocaleString()}\` VCASH`, inline: true },
+                    { name: '💼 Đang sở hữu', value: `\`${owned}\` đơn vị (≈ \`${(owned * currentPrice).toLocaleString()}\`)` },
+                    { name: '🕒 Diễn biến giá', value: `\`\`\`diff\n${visualChart}\n\`\`\`` }
+                )
+                .setFooter({ text: 'Sàn VSE • Phí 1% • Cập nhật mỗi 5 phút' })
+                .setTimestamp();
+
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // --- LỆNH BUY / SELL ---
+        const fee = 0.01;
+        if (subcommand === 'buy') {
+            const totalCost = Math.round((qty * stock.price) * (1 + fee));
+            if (userData.balance < totalCost) return interaction.editReply(`❌ Bạn thiếu \`${(totalCost - userData.balance).toLocaleString()}\` VCASH để thực hiện lệnh này.`);
+
+            portfolio[symbol] = (portfolio[symbol] || 0) + qty;
+            await prisma.user.update({
+                where: { id: userAuth.id },
+                data: { balance: { decrement: totalCost }, stocks: JSON.stringify(portfolio) }
             });
 
-            const userHouses = await prisma.house.findMany({ where: { ownerId: user.id } });
+            return interaction.editReply(`✅ **Mua thành công!** Bạn đã mua \`${qty}\` ${symbol} với giá \`${totalCost.toLocaleString()}\` VCASH.`);
+        }
 
-            // --- LỆNH MUA (BUY) ---
-            if (sub === 'buy') {
-                if (userHouses.length >= 10) return interaction.reply({ content: "⚠️ Bạn đã đạt giới hạn 10 bất động sản!", ephemeral: true });
-                
-                const price = 50000;
-                if (userData.balance < price) return interaction.reply({ content: `❌ Thiếu \`${(price - userData.balance).toLocaleString()}\` Cash.`, ephemeral: true });
+        if (subcommand === 'sell') {
+            if (owned < qty) return interaction.editReply(`❌ Bạn chỉ có \`${owned}\` cổ phiếu **${symbol}**!`);
 
-                await interaction.deferReply();
-                
-                try {
-                    const rand = Math.random() * 100;
-                    let rarity = { name: "Thường", multi: 1.2, color: 0x95a5a6, emoji: "🏠" };
-                    if (rand > 99) rarity = { name: "Huyền Thoại", multi: 10.0, color: 0xffac33, emoji: "🌌" };
-                    else if (rand > 90) rarity = { name: "Cực Hiếm", multi: 4.5, color: 0xa633ff, emoji: "💎" };
-                    else if (rand > 70) rarity = { name: "Cao Cấp", multi: 2.5, color: 0x3498db, emoji: "🏢" };
+            const totalGain = Math.round((qty * stock.price) * (1 - fee));
+            portfolio[symbol] = owned - qty;
+            await prisma.user.update({
+                where: { id: userAuth.id },
+                data: { balance: { increment: totalGain }, stocks: JSON.stringify(portfolio) }
+            });
 
-                    const voiceChannel = await guild.channels.create({
-                        name: `${rarity.emoji}┃${options.getString('name')}`,
-                        type: ChannelType.GuildVoice,
-                        permissionOverwrites: [
-                            { id: guild.id, deny: [PermissionFlagsBits.Connect] },
-                            { id: user.id, allow: [PermissionFlagsBits.Connect, PermissionFlagsBits.Speak, PermissionFlagsBits.ManageChannels] },
-                        ],
-                    });
-
-                    await prisma.$transaction([
-                        prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: price } } }),
-                        prisma.house.create({
-                            data: {
-                                ownerId: user.id, channelId: voiceChannel.id, name: options.getString('name'),
-                                rarity: rarity.name, multiplier: rarity.multi, currentValue: price, level: 1
-                            }
-                        })
-                    ]);
-
-                    const embed = new EmbedBuilder()
-                        .setTitle("🎉 ĐẦU TƯ THÀNH CÔNG")
-                        .setColor(rarity.color)
-                        .addFields(
-                            { name: "🏠 Tên", value: options.getString('name') },
-                            { name: "📈 Hệ số", value: `x${rarity.multi}` },
-                            { name: "📍 Vị trí", value: `<#${voiceChannel.id}>` }
-                        );
-
-                    return interaction.editReply({ embeds: [embed] });
-                } catch (err) {
-                    console.error("Lỗi mua nhà:", err);
-                    return interaction.editReply("❌ Có lỗi xảy ra khi tạo kênh hoặc lưu DB.");
-                }
-            }
-
-            // --- LỆNH INFO ---
-            if (sub === 'info') {
-                const embed = new EmbedBuilder()
-                    .setAuthor({ name: `Danh mục BĐS: ${user.username}`, iconURL: user.displayAvatarURL() })
-                    .setColor(0x2ecc71)
-                    .setDescription(`💳 Số dư: \`${userData.balance.toLocaleString()}\` Cash`);
-
-                if (userHouses.length === 0) {
-                    embed.addFields({ name: "Trạng thái", value: "Chưa có tài sản nào." });
-                } else {
-                    userHouses.forEach((h, i) => {
-                        embed.addFields({ 
-                            name: `${i+1}. ${h.name} (Lv.${h.level})`, 
-                            value: `> 💎 **${h.rarity}** | Hệ số: x${h.multiplier}\n> 💰 Trị giá: ${h.currentValue.toLocaleString()} | <#${h.channelId}>` 
-                        });
-                    });
-                }
-                return interaction.reply({ embeds: [embed] });
-            }
-
-            // --- LỆNH UPGRADE / SELL ---
-            if (sub === 'upgrade' || sub === 'sell') {
-                if (userHouses.length === 0) return interaction.reply({ content: "❌ Bạn không có tài sản nào!", ephemeral: true });
-
-                const selectMenu = new StringSelectMenuBuilder()
-                    .setCustomId('re_select')
-                    .setPlaceholder('Chọn tài sản...')
-                    .addOptions(userHouses.map(h => ({
-                        label: `[Lv.${h.level}] ${h.name}`,
-                        description: `Multi: x${h.multiplier} - Trị giá: ${h.currentValue.toLocaleString()}`,
-                        value: `${sub}_${h.id}`
-                    })));
-
-                const row = new ActionRowBuilder().addComponents(selectMenu);
-                const response = await interaction.reply({ content: `### 🛠️ Quản lý BĐS\nChọn tài sản để **${sub}**:`, components: [row] });
-
-                const collector = response.createMessageComponentCollector({ 
-                    filter: i => i.user.id === user.id, 
-                    time: 30000 
-                });
-
-                collector.on('collect', async i => {
-                    const [action, houseId] = i.values[0].split('_');
-                    const targetHouse = await prisma.house.findUnique({ where: { id: houseId } });
-
-                    if (!targetHouse) return i.update({ content: "❌ Không tìm thấy tài sản!", components: [] });
-
-                    if (action === 'upgrade') {
-                        const cost = Math.floor(targetHouse.currentValue * 0.5);
-                        if (userData.balance < cost) return i.reply({ content: "❌ Không đủ tiền nâng cấp!", ephemeral: true });
-
-                        await prisma.$transaction([
-                            prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } }),
-                            prisma.house.update({ 
-                                where: { id: houseId }, 
-                                data: { level: { increment: 1 }, multiplier: { increment: 0.5 }, currentValue: { increment: cost } } 
-                            })
-                        ]);
-                        return i.update({ content: `✅ Đã nâng cấp **${targetHouse.name}** lên Lv.${targetHouse.level + 1}!`, components: [] });
-                    } 
-                    
-                    if (action === 'sell') {
-                        const refund = Math.floor(targetHouse.currentValue * 0.7);
-                        await prisma.$transaction([
-                            prisma.user.update({ where: { id: user.id }, data: { balance: { increment: refund } } }),
-                            prisma.house.delete({ where: { id: houseId } })
-                        ]);
-
-                        const chan = guild.channels.cache.get(targetHouse.channelId);
-                        if (chan && chan.deletable) {
-                            await chan.delete().catch(() => {});
-                        }
-                        return i.update({ content: `💰 Đã bán **${targetHouse.name}**, nhận lại \`${refund.toLocaleString()}\` Cash.`, components: [] });
-                    }
-                });
-
-                collector.on('end', (collected, reason) => {
-                    if (reason === 'time' && collected.size === 0) {
-                        interaction.editReply({ components: [] }).catch(() => {});
-                    }
-                });
-            }
-
-        } catch (error) {
-            console.error("Lỗi Real Estate:", error);
-            if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: "❌ Lỗi hệ thống!", ephemeral: true });
-            }
+            return interaction.editReply(`✅ **Bán thành công!** Bạn nhận về \`${totalGain.toLocaleString()}\` VCASH sau khi trừ phí.`);
         }
     }
 };
+
+function createVisualChart(data) {
+    if (data.length < 2) return "Đang khởi tạo dữ liệu...";
+    const max = Math.max(...data);
+    const min = Math.min(...data);
+    const range = max - min || 1;
+    const levels = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    
+    return data.map((val, i) => {
+        const prev = data[i-1] || val;
+        const prefix = val >= prev ? "+" : "-";
+        const idx = Math.floor(((val - min) / range) * 7);
+        return `${prefix}${levels[idx]}`;
+    }).join(' ');
+}
