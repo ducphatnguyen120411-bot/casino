@@ -1,12 +1,11 @@
-// 1. CẤU HÌNH KẾT NỐI
+// 1. CẤU HÌNH KẾT NỐI (SỬA LẠI ĐÂY)
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  // Sửa dòng này để nhận biến môi trường
-  url      = env("DATABASE_URL") 
+  provider = "mysql" // Đổi từ sqlite sang mysql để khớp với Railway
+  url      = env("DATABASE_URL")
 }
 
 // 2. BẢNG NGƯỜI DÙNG (USER)
@@ -40,10 +39,10 @@ model House {
   @@index([channelId])
 }
 
-// 4. BẢNG THỊ TRƯỜNG (MARKET)
+// 4. BẢNG THỊ TRƯỜNG CHỨNG KHOÁN (MARKET)
 model Market {
   id        Int      @id @default(1)
   price     Float    @default(100.0)
-  history   String   @default("[]")
+  history   String   @default("[]") // Lưu mảng giá JSON
   updatedAt DateTime @updatedAt
 }
