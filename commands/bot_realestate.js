@@ -31,7 +31,7 @@ module.exports = {
 
             const userHouses = await prisma.house.findMany({ where: { ownerId: user.id } });
 
-         // --- LỆNH MUA (BUY) ---
+            // --- LỆNH MUA (BUY) ---
             if (sub === 'buy') {
                 if (userHouses.length >= 10) return interaction.reply({ content: "⚠️ Bạn đã đạt giới hạn 10 bất động sản!", ephemeral: true });
                 
@@ -81,7 +81,7 @@ module.exports = {
                     return interaction.editReply({ embeds: [embed] });
                 } catch (err) {
                     console.error("Lỗi tạo channel:", err);
-                    return interaction.editReply({ content: "❌ Không thể tạo kênh Voice. Vui lòng kiểm tra quyền của Bot hoặc giới hạn Channel của Server!" });
+                    return interaction.editReply({ content: "❌ Không thể tạo kênh Voice!" });
                 }
             }
 
@@ -104,7 +104,48 @@ module.exports = {
                     });
                 }
                 return interaction.reply({ embeds: [embed] });
-                        // --- FIX A: KIỂM TRA QUYỀN XÓA CHANNEL ---
+            }
+
+            // --- LỆNH UPGRADE / SELL ---
+            if (sub === 'upgrade' || sub === 'sell') {
+                if (userHouses.length === 0) return interaction.reply({ content: "❌ Bạn không có tài sản nào!", ephemeral: true });
+
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId('re_select')
+                    .setPlaceholder('Chọn tài sản...')
+                    .addOptions(userHouses.map(h => ({
+                        label: `[Lv.${h.level}] ${h.name}`,
+                        description: `Multi: x${h.multiplier} - Trị giá: ${h.currentValue.toLocaleString()}`,
+                        value: `${sub}_${h.id}`
+                    })));
+
+                const row = new ActionRowBuilder().addComponents(selectMenu);
+                const response = await interaction.reply({ content: `### 🛠️ Quản lý BĐS\nChọn tài sản để **${sub}**:`, components: [row] });
+
+                const collector = response.createMessageComponentCollector({ 
+                    filter: i => i.user.id === user.id, 
+                    time: 15000 
+                });
+
+                collector.on('collect', async i => {
+                    const [action, houseId] = i.values[0].split('_');
+                    const targetHouse = await prisma.house.findUnique({ where: { id: houseId } });
+                    
+                    if (!targetHouse) return i.update({ content: "❌ Không tìm thấy tài sản trong DB!", components: [] });
+
+                    if (action === 'upgrade') {
+                        const cost = Math.floor(targetHouse.currentValue * 0.5);
+                        if (userData.balance < cost) return i.reply({ content: `❌ Thiếu \`${(cost - userData.balance).toLocaleString()}\` Cash.`, ephemeral: true });
+
+                        await prisma.$transaction([
+                            prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } }),
+                            prisma.house.update({ 
+                                where: { id: houseId }, 
+                                data: { level: { increment: 1 }, multiplier: { increment: 0.5 }, currentValue: { increment: cost } } 
+                            })
+                        ]);
+                        await i.update({ content: `✅ Nâng cấp thành công **${targetHouse.name}**!`, components: [] });
+                    } else if (action === 'sell') {
                         const refund = Math.floor(targetHouse.currentValue * 0.7);
                         await prisma.$transaction([
                             prisma.user.update({ where: { id: user.id }, data: { balance: { increment: refund } } }),
@@ -112,7 +153,6 @@ module.exports = {
                         ]);
 
                         const chan = guild.channels.cache.get(targetHouse.channelId);
-                        // Chỉ xóa nếu channel tồn tại và bot có quyền xóa (deletable)
                         if (chan && chan.deletable) {
                             await chan.delete().catch(err => console.error("Lỗi xóa voice:", err));
                         }
@@ -121,7 +161,6 @@ module.exports = {
                     }
                 });
 
-                // --- FIX B: DỌN DẸP COMPONENT KHI HẾT HẠN ---
                 collector.on('end', async (collected, reason) => {
                     if (reason === 'time' && collected.size === 0) {
                         await interaction.editReply({ content: "⚠️ Hết thời gian thao tác!", components: [] }).catch(() => {});
@@ -133,5 +172,35 @@ module.exports = {
             console.error("Lỗi Real Estate:", error);
             if (!interaction.replied) await interaction.reply({ content: "❌ Lỗi hệ thống!", ephemeral: true });
         }
+    },
+
+    // Hàm handleVoice nằm riêng bên ngoài execute
+    async handleVoice(oldState, newState, prisma) {
+        try {
+            const uid = newState.id;
+            if (!oldState.channelId && newState.channelId) voiceSession.set(uid, Date.now());
+
+            if (oldState.channelId && !newState.channelId) {
+                const start = voiceSession.get(uid);
+                if (!start) return;
+
+                const mins = Math.floor((Date.now() - start) / 60000);
+                voiceSession.delete(uid);
+                if (mins < 1) return;
+
+                const house = await prisma.house.findUnique({ where: { channelId: oldState.channelId } });
+                if (house) {
+                    const earn = Math.floor(mins * 50 * house.multiplier);
+                    await prisma.user.update({ where: { id: uid }, data: { balance: { increment: earn } } });
+
+                    if (house.ownerId === uid) {
+                        await prisma.house.update({ 
+                            where: { id: house.id }, 
+                            data: { currentValue: { increment: Math.floor(earn * 0.2) } } 
+                        });
+                    }
+                }
+            }
+        } catch (e) { console.error("Lỗi Voice BĐS:", e); }
     }
 };
