@@ -69,19 +69,16 @@ module.exports = {
                     const embed = new EmbedBuilder()
                         .setTitle("🎉 ĐẦU TƯ THÀNH CÔNG")
                         .setColor(rarity.color)
-                        .setDescription(`Chúc mừng bạn đã sở hữu bất động sản mới!`)
                         .addFields(
-                            { name: "🏠 Tên", value: `**${options.getString('name')}**`, inline: true },
-                            { name: "💎 Cấp bậc", value: `**${rarity.name}**`, inline: true },
-                            { name: "📈 Thu nhập", value: `**x${rarity.multi}**`, inline: true },
-                            { name: "📍 Vị trí", value: `<#${voiceChannel.id}>`, inline: false }
-                        )
-                        .setFooter({ text: "Sử dụng /realestate info để xem danh sách" });
+                            { name: "🏠 Tên", value: options.getString('name') },
+                            { name: "📈 Hệ số", value: `x${rarity.multi}` },
+                            { name: "📍 Vị trí", value: `<#${voiceChannel.id}>` }
+                        );
 
                     return interaction.editReply({ embeds: [embed] });
                 } catch (err) {
-                    console.error("Lỗi tạo channel:", err);
-                    return interaction.editReply({ content: "❌ Không thể tạo kênh Voice!" });
+                    console.error("Lỗi mua nhà:", err);
+                    return interaction.editReply("❌ Có lỗi xảy ra khi tạo kênh hoặc lưu DB.");
                 }
             }
 
@@ -90,16 +87,15 @@ module.exports = {
                 const embed = new EmbedBuilder()
                     .setAuthor({ name: `Danh mục BĐS: ${user.username}`, iconURL: user.displayAvatarURL() })
                     .setColor(0x2ecc71)
-                    .setThumbnail(user.displayAvatarURL())
-                    .setDescription(`💳 **Tài khoản:** \`${userData.balance.toLocaleString()}\` Cash\n🏰 **Tổng số căn:** \`${userHouses.length}/10\``);
+                    .setDescription(`💳 Số dư: \`${userData.balance.toLocaleString()}\` Cash`);
 
                 if (userHouses.length === 0) {
-                    embed.addFields({ name: "Trạng thái", value: "Chưa có tài sản nào. Hãy dùng `/realestate buy`" });
+                    embed.addFields({ name: "Trạng thái", value: "Chưa có tài sản nào." });
                 } else {
                     userHouses.forEach((h, i) => {
                         embed.addFields({ 
-                            name: `🏠 ${i+1}. ${h.name} (Lv.${h.level})`, 
-                            value: `> 💎 **${h.rarity}** | 📈 **x${h.multiplier.toFixed(1)}**\n> 💰 Trị giá: \`${h.currentValue.toLocaleString()}\` | <#${h.channelId}>` 
+                            name: `${i+1}. ${h.name} (Lv.${h.level})`, 
+                            value: `> 💎 **${h.rarity}** | Hệ số: x${h.multiplier}\n> 💰 Trị giá: ${h.currentValue.toLocaleString()} | <#${h.channelId}>` 
                         });
                     });
                 }
@@ -124,18 +120,18 @@ module.exports = {
 
                 const collector = response.createMessageComponentCollector({ 
                     filter: i => i.user.id === user.id, 
-                    time: 15000 
+                    time: 30000 
                 });
 
                 collector.on('collect', async i => {
                     const [action, houseId] = i.values[0].split('_');
                     const targetHouse = await prisma.house.findUnique({ where: { id: houseId } });
-                    
-                    if (!targetHouse) return i.update({ content: "❌ Không tìm thấy tài sản trong DB!", components: [] });
+
+                    if (!targetHouse) return i.update({ content: "❌ Không tìm thấy tài sản!", components: [] });
 
                     if (action === 'upgrade') {
                         const cost = Math.floor(targetHouse.currentValue * 0.5);
-                        if (userData.balance < cost) return i.reply({ content: `❌ Thiếu \`${(cost - userData.balance).toLocaleString()}\` Cash.`, ephemeral: true });
+                        if (userData.balance < cost) return i.reply({ content: "❌ Không đủ tiền nâng cấp!", ephemeral: true });
 
                         await prisma.$transaction([
                             prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } }),
@@ -144,8 +140,10 @@ module.exports = {
                                 data: { level: { increment: 1 }, multiplier: { increment: 0.5 }, currentValue: { increment: cost } } 
                             })
                         ]);
-                        await i.update({ content: `✅ Nâng cấp thành công **${targetHouse.name}**!`, components: [] });
-                    } else if (action === 'sell') {
+                        return i.update({ content: `✅ Đã nâng cấp **${targetHouse.name}** lên Lv.${targetHouse.level + 1}!`, components: [] });
+                    } 
+                    
+                    if (action === 'sell') {
                         const refund = Math.floor(targetHouse.currentValue * 0.7);
                         await prisma.$transaction([
                             prisma.user.update({ where: { id: user.id }, data: { balance: { increment: refund } } }),
@@ -154,53 +152,24 @@ module.exports = {
 
                         const chan = guild.channels.cache.get(targetHouse.channelId);
                         if (chan && chan.deletable) {
-                            await chan.delete().catch(err => console.error("Lỗi xóa voice:", err));
+                            await chan.delete().catch(() => {});
                         }
-                        
-                        await i.update({ content: `💰 Đã thanh lý **${targetHouse.name}**, nhận lại \`${refund.toLocaleString()}\` Cash.`, components: [] });
+                        return i.update({ content: `💰 Đã bán **${targetHouse.name}**, nhận lại \`${refund.toLocaleString()}\` Cash.`, components: [] });
                     }
                 });
 
-                collector.on('end', async (collected, reason) => {
+                collector.on('end', (collected, reason) => {
                     if (reason === 'time' && collected.size === 0) {
-                        await interaction.editReply({ content: "⚠️ Hết thời gian thao tác!", components: [] }).catch(() => {});
+                        interaction.editReply({ components: [] }).catch(() => {});
                     }
                 });
             }
 
         } catch (error) {
             console.error("Lỗi Real Estate:", error);
-            if (!interaction.replied) await interaction.reply({ content: "❌ Lỗi hệ thống!", ephemeral: true });
-        }
-    },
-
-    // Hàm handleVoice nằm riêng bên ngoài execute
-    async handleVoice(oldState, newState, prisma) {
-        try {
-            const uid = newState.id;
-            if (!oldState.channelId && newState.channelId) voiceSession.set(uid, Date.now());
-
-            if (oldState.channelId && !newState.channelId) {
-                const start = voiceSession.get(uid);
-                if (!start) return;
-
-                const mins = Math.floor((Date.now() - start) / 60000);
-                voiceSession.delete(uid);
-                if (mins < 1) return;
-
-                const house = await prisma.house.findUnique({ where: { channelId: oldState.channelId } });
-                if (house) {
-                    const earn = Math.floor(mins * 50 * house.multiplier);
-                    await prisma.user.update({ where: { id: uid }, data: { balance: { increment: earn } } });
-
-                    if (house.ownerId === uid) {
-                        await prisma.house.update({ 
-                            where: { id: house.id }, 
-                            data: { currentValue: { increment: Math.floor(earn * 0.2) } } 
-                        });
-                    }
-                }
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: "❌ Lỗi hệ thống!", ephemeral: true });
             }
-        } catch (e) { console.error("Lỗi Voice BĐS:", e); }
+        }
     }
 };
