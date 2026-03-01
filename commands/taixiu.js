@@ -1,164 +1,138 @@
 const { 
     SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, 
-    ButtonBuilder, ButtonStyle, ComponentType 
+    ButtonBuilder, ButtonStyle 
 } = require('discord.js');
 
-// Lưu lịch sử (Sẽ reset khi bot restart)
 let history = []; 
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('taixiu')
-        .setDescription('💎 Sòng bài Thượng lưu - Hiệu ứng shuffle đẳng cấp')
-        .addIntegerOption(opt => 
-            opt.setName('money')
-                .setDescription('Số tiền đặt cược')
-                .setRequired(true)
-                .setMinValue(100)),
+        .setDescription('💎 Casino Thượng Lưu - Chọn cửa trước, đặt tiền sau'),
 
-    async execute(input, prisma, args) {
-        // --- PHẦN 1: NHẬN DIỆN LOẠI LỆNH (! hoặc /) ---
-        const isSlash = !!input.options;
-        const amount = isSlash ? input.options.getInteger('money') : parseInt(args[0]);
-        const user = isSlash ? input.user : input.author;
-
-        // Kiểm tra số tiền hợp lệ
-        if (!amount || isNaN(amount) || amount < 100) {
-            const msg = "❌ Quý khách vui lòng nhập số tiền cược hợp lệ (Ví dụ: `!taixiu 5000` hoặc dùng `/taixiu`)!";
-            return isSlash ? input.reply({ content: msg, ephemeral: true }) : input.reply(msg);
-        }
+    async execute(input, prisma) {
+        const user = input.user || input.author;
 
         try {
-            // 1. Kiểm tra ví & Khởi tạo
+            // 1. Khởi tạo dữ liệu người dùng
             let userData = await prisma.user.upsert({
                 where: { id: user.id },
                 update: {},
                 create: { id: user.id, balance: 50000 } 
             });
 
-            if (userData.balance < amount) {
-                const lowMoney = `⚠️ **Số dư không đủ!** Bạn cần thêm \`${(amount - userData.balance).toLocaleString()}\` Cash.`;
-                return isSlash ? input.reply({ content: lowMoney, ephemeral: true }) : input.reply(lowMoney);
-            }
-
-            // 2. Giao diện sảnh chờ (Dàn dựng cực chuyên nghiệp)
+            // --- BƯỚC 1: HIỆN BẢNG CHỌN CỬA ---
             const cauDisplay = history.length > 0 
                 ? history.slice(-10).map(res => res === 'TAI' ? '🔴' : '🔵').join(' ') 
                 : '`Chưa có dữ liệu ván đấu`';
 
-            const lobbyEmbed = new EmbedBuilder()
+            const startEmbed = new EmbedBuilder()
                 .setColor(0xD4AF37)
                 .setTitle('⚜️ VERDICT PRESTIGE CASINO ⚜️')
                 .setThumbnail(user.displayAvatarURL())
                 .setDescription(
-                    `\`\`\`arm\n` +
-                    `CHỦ BÀN: ${user.username.toUpperCase()}\n` +
-                    `MỨC CƯỢC: ${amount.toLocaleString()} CASH\n` +
-                    `──────────────────────────────\n` +
-                    `SOI CẦU: ${history.slice(-5).join(' - ') || 'N/A'}\n` +
-                    `\`\`\`\n` +
-                    `**📊 Lịch sử gần đây:**\n${cauDisplay}\n\n` +
-                    `*Quý khách vui lòng chọn cửa đặt...*`
+                    `Chào mừng **${user.username}**,\nVui lòng chọn cửa quý khách muốn đặt cược.\n\n` +
+                    `💰 **Ví:** \`${userData.balance.toLocaleString()}\` VCASH\n` +
+                    `📊 **Cầu:** ${cauDisplay}`
                 )
-                .setFooter({ text: '⏳ Hệ thống tự hủy sau 15s' });
+                .setFooter({ text: '⏳ Hết hạn sau 15s' });
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('TAI').setLabel('ĐẶT TÀI').setEmoji('🔴').setStyle(ButtonStyle.Danger),
-                new ButtonBuilder().setCustomId('XIU').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Primary)
+            const startRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('choice_TAI').setLabel('ĐẶT TÀI').setEmoji('🔴').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('choice_XIU').setLabel('ĐẶT XỈU').setEmoji('🔵').setStyle(ButtonStyle.Primary)
             );
 
-            const response = await input.reply({ embeds: [lobbyEmbed], components: [row], fetchReply: true });
+            const msg = await input.reply({ embeds: [startEmbed], components: [startRow], fetchReply: true });
 
-            const collector = response.createMessageComponentCollector({
-                filter: i => i.user.id === user.id,
-                time: 15000,
-                max: 1
-            });
+            // Collector 1: Chọn Tài hay Xỉu
+            const collector1 = msg.createMessageComponentCollector({ filter: i => i.user.id === user.id, time: 15000, max: 1 });
 
-            collector.on('collect', async i => {
-                // Khóa tiền và xóa giao diện cũ
-                await i.update({ content: '⚙️ **Đang ghi nhận đặt cược...**', embeds: [], components: [] });
-                
-                await prisma.user.update({ 
-                    where: { id: user.id }, 
-                    data: { balance: { decrement: amount } } 
-                });
+            collector1.on('collect', async iChoice => {
+                const userChoice = iChoice.customId.replace('choice_', '');
 
-                const userChoice = i.customId;
-                const diceIcons = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+                // --- BƯỚC 2: HIỆN BẢNG CHỌN TIỀN ---
+                const moneyEmbed = new EmbedBuilder()
+                    .setColor(userChoice === 'TAI' ? 0xE74C3C : 0x3498DB)
+                    .setTitle(`🎯 QUÝ KHÁCH ĐÃ CHỌN: ${userChoice}`)
+                    .setDescription(`Vui lòng chọn số tiền muốn đặt cược vào cửa **${userChoice}**.`);
 
-                // --- PHẦN 3: HIỆU ỨNG SHUFFLE XÚC XẮC XOAY ---
-                for (let step = 0; step < 6; step++) {
-                    const r1 = diceIcons[Math.floor(Math.random() * 6)];
-                    const r2 = diceIcons[Math.floor(Math.random() * 6)];
-                    const r3 = diceIcons[Math.floor(Math.random() * 6)];
+                const moneyRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('bet_1000').setLabel('1,000').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('bet_5000').setLabel('5,000').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('bet_10000').setLabel('10,000').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('bet_allin').setLabel('ALL IN').setStyle(ButtonStyle.Danger)
+                );
+
+                await iChoice.update({ embeds: [moneyEmbed], components: [moneyRow] });
+
+                // Collector 2: Chọn số tiền
+                const collector2 = msg.createMessageComponentCollector({ filter: i => i.user.id === user.id, time: 15000, max: 1 });
+
+                collector2.on('collect', async iBet => {
+                    let amount = iBet.customId === 'bet_allin' ? userData.balance : parseInt(iBet.customId.replace('bet_', ''));
+
+                    if (userData.balance < amount || amount < 100) {
+                        return iBet.update({ content: '❌ Số dư không đủ để thực hiện giao dịch!', embeds: [], components: [] });
+                    }
+
+                    // Khóa tiền
+                    await prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: amount } } });
+
+                    // --- BƯỚC 3: HIỆU ỨNG MỞ TỪNG VIÊN ---
+                    const diceIcons = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+                    const d = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
+                    const total = d.reduce((a, b) => a + b, 0);
+                    const result = total >= 11 ? 'TAI' : 'XIU';
+                    const isWin = userChoice === result;
+
+                    // Lắc bát
+                    await iBet.update({ content: '🎲 **Đang lắc bát...**', embeds: [], components: [] });
+                    await new Promise(r => setTimeout(r, 1500));
+
+                    // Mở từng viên
+                    let openMsg = `🛑 **KẾT QUẢ VÁN ĐẤU**\n\n`;
                     
-                    const progress = '▓'.repeat(step * 3) + '░'.repeat(15 - step * 3);
-                    
-                    const shuffleMsg = 
-                        `🎰 **VERDICT CASINO - ĐANG LẮC BÁT...**\n` +
-                        `🎲 **[ ${r1} ${r2} ${r3} ]**\n` +
-                        `\`[${progress}]\` ${(step * 20)}%`;
+                    openMsg += `🎲 Viên 1: **${diceIcons[d[0]-1]}** (${d[0]})\n`;
+                    await iBet.editReply({ content: openMsg + `⏳ *Đang mở viên 2...*` });
+                    await new Promise(r => setTimeout(r, 1200));
 
-                    await i.editReply({ content: shuffleMsg });
-                    await new Promise(r => setTimeout(r, 500)); // Delay tạo độ hồi hộp
-                }
+                    openMsg += `🎲 Viên 2: **${diceIcons[d[1]-1]}** (${d[1]})\n`;
+                    await iBet.editReply({ content: openMsg + `⏳ *Đang mở viên cuối...*` });
+                    await new Promise(r => setTimeout(r, 1200));
 
-                // 4. Tính toán kết quả thật
-                const d = [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1];
-                const total = d.reduce((a, b) => a + b, 0);
-                const result = total >= 11 ? 'TAI' : 'XIU';
-                const isWin = userChoice === result;
+                    openMsg += `🎲 Viên 3: **${diceIcons[d[2]-1]}** (${d[2]})\n`;
+                    await iBet.editReply({ content: openMsg + `\n➔ **Tổng điểm: ${total}**` });
+                    await new Promise(r => setTimeout(r, 1000));
 
-                history.push(result);
-                if (history.length > 20) history.shift();
+                    // Chốt tiền và lịch sử
+                    history.push(result);
+                    if (history.length > 20) history.shift();
 
-                let finalBalance;
-                if (isWin) {
-                    const updateWin = await prisma.user.update({
+                    const finalUser = await prisma.user.update({
                         where: { id: user.id },
-                        data: { balance: { increment: amount * 2 } }
+                        data: { balance: { increment: isWin ? amount * 2 : 0 } }
                     });
-                    finalBalance = updateWin.balance;
-                } else {
-                    const current = await prisma.user.findUnique({ where: { id: user.id } });
-                    finalBalance = current.balance;
-                }
 
-                const finalDiceStr = d.map(v => diceIcons[v-1]).join(' ');
-                
-                // --- PHẦN 5: GIAO DIỆN KẾT QUẢ ANSI ---
-                const resultEmbed = new EmbedBuilder()
-                    .setColor(isWin ? 0x2ECC71 : 0xE74C3C)
-                    .setTitle(`${isWin ? '🎊 THẮNG LỚN' : '💸 THUA RỒI'}: ${finalDiceStr} ➜ ${total} (${result})`)
-                    .setDescription(
-                        `\`\`\`ansi\n` +
-                        `[0;33m╔══════════════════════════════════╗[0m\n` +
-                        `  [1;37mKẾT QUẢ VÁN ĐẤU TRỰC TUYẾN[0m\n` +
-                        `[0;33m╚══════════════════════════════════╝[0m\n` +
-                        ` ▸ Người chơi:  ${user.username}\n` +
-                        ` ▸ Đã chọn:     ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
-                        ` ▸ Biến động:   ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
-                        ` ▸ Số dư mới:   [0;36m${finalBalance.toLocaleString()}[0m Cash\n` +
-                        `────────────────────────────────────\n` +
-                        `\`\`\`\n` +
-                        `**📊 Soi cầu:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
-                    );
+                    // --- BƯỚC 4: BẢNG KẾT QUẢ CUỐI ---
+                    const resEmbed = new EmbedBuilder()
+                        .setColor(isWin ? 0x2ECC71 : 0xE74C3C)
+                        .setTitle(`${isWin ? '🎊 CHIẾN THẮNG' : '💸 THẤT BẠI'} - ${result}`)
+                        .setDescription(
+                            `\`\`\`ansi\n` +
+                            ` ▸ Cửa đặt:    ${userChoice === 'TAI' ? '[0;31mTÀI[0m' : '[0;34mXỈU[0m'}\n` +
+                            ` ▸ Biến động:  ${isWin ? '[0;32m+' : '[0;31m-'}${amount.toLocaleString()} Cash[0m\n` +
+                            ` ▸ Số dư mới:  [0;36m${finalUser.balance.toLocaleString()}[0m Cash\n` +
+                            `────────────────────────────────────\n` +
+                            `\`\`\`\n` +
+                            `**📊 Cầu:** ${history.slice(-10).map(r => r === 'TAI' ? '🔴' : '🔵').join(' ')}`
+                        );
 
-                await i.editReply({ content: '✅ **Mở bát thành công!**', embeds: [resultEmbed] });
-            });
-
-            collector.on('end', (collected, reason) => {
-                if (reason === 'time' && collected.size === 0) {
-                    const timeoutMsg = '💤 **Ván đấu đã hủy** do quý khách không thao tác.';
-                    isSlash ? input.editReply({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {}) 
-                            : response.edit({ content: timeoutMsg, embeds: [], components: [] }).catch(() => {});
-                }
+                    await iBet.editReply({ content: '✅ **Ván đấu kết thúc!**', embeds: [resEmbed] });
+                });
             });
 
         } catch (err) {
-            console.error('Lỗi TaiXiu:', err);
-            if (!input.replied) input.reply({ content: '❌ Casino đang bảo trì!', ephemeral: true });
+            console.error(err);
         }
     }
 };
