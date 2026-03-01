@@ -1,14 +1,16 @@
 {
   "name": "verdict-cash-system",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "index.js",
   "dependencies": {
-    "@prisma/client": "^5.0.0",
-    "discord.js": "^14.11.0",
-    "dotenv": "^16.0.0",
-    "prisma": "^5.0.0"
+    "@discordjs/rest": "^2.0.0",
+    "@prisma/client": "^5.10.0",
+    "discord-api-types": "^10.0.0",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5",
+    "prisma": "^5.10.0"
   },
   "scripts": {
-    "start": "npx prisma generate && node index.js"
+    "start": "node index.js"
   }
 }
