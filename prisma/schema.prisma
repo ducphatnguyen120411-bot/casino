@@ -1,35 +1,37 @@
-// 1. CẤU HÌNH KẾT NỐI (SỬA LẠI ĐÂY)
+// 1. Cấu hình kết nối
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "mysql" // Đổi từ sqlite sang mysql để khớp với Railway
+  provider = "mysql" 
   url      = env("DATABASE_URL")
 }
 
-// 2. BẢNG NGƯỜI DÙNG (USER)
+// 2. Bảng Người Dùng (User)
 model User {
-  id         String   @id
-  balance    Int      @default(1000)
-  msgCount   Int      @default(0)
-  totalWins  Int      @default(0)
-  lastDaily  DateTime?
-  createdAt  DateTime @default(now())
+  id          String   @id
+  balance     Int      @default(100000) // Vốn khởi nghiệp 100k
+  stocks      String   @default("{}")   // Lưu dạng JSON: {"BTC": 5, "GOLD": 10}
+  msgCount    Int      @default(0)
+  totalWins   Int      @default(0)      // Tổng số ván Tài Xỉu thắng
+  lastDaily   DateTime?
+  createdAt   DateTime @default(now())
   
-  houses     House[]
+  // Quan hệ với nhà cửa
+  houses      House[]
 
   @@index([id])
 }
 
-// 3. BẢNG BẤT ĐỘNG SẢN (HOUSE)
+// 3. Bảng Bất Động Sản (House)
 model House {
   id           String   @id @default(uuid())
   ownerId      String
   channelId    String   @unique
   name         String
-  rarity       String
-  multiplier   Float    @default(1.0)
+  rarity       String   // Common, Rare, Epic, Legendary
+  multiplier   Float    @default(1.0)    // Hệ số nhân tiền khi làm việc
   currentValue Int      @default(50000)
   level        Int      @default(1)
   
@@ -39,10 +41,19 @@ model House {
   @@index([channelId])
 }
 
-// 4. BẢNG THỊ TRƯỜNG CHỨNG KHOÁN (MARKET)
+// 4. Bảng Chứng Khoán / Vật phẩm (Stock)
+model Stock {
+  symbol    String   @id              // Mã: BTC, GOLD, VCASH
+  name      String
+  price     Float    @default(100.0)
+  history   String   @default("[]")   // Lưu mảng giá JSON để vẽ biểu đồ TTX
+  updatedAt DateTime @updatedAt
+}
+
+// 5. Bảng Hệ Thống (Market/Status)
 model Market {
   id        Int      @id @default(1)
-  price     Float    @default(100.0)
-  history   String   @default("[]") // Lưu mảng giá JSON
+  status    String   @default("OPEN") // Trạng thái sàn: OPEN/CLOSED
+  jackpot   Int      @default(0)      // Tiền hũ Tài Xỉu tích lũy
   updatedAt DateTime @updatedAt
 }
