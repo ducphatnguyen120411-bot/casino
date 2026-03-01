@@ -1,18 +1,17 @@
 {
   "name": "verdict-cash-system",
   "version": "1.1.0",
+  "description": "Discord Economy Bot with Prisma and MySQL",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@discordjs/rest": "^2.2.0",
-    "@prisma/client": "^5.22.0",
-    "discord-api-types": "^0.37.73",
+    "@prisma/client": "^5.10.2",
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5",
-    "prisma": "^5.22.0"
+    "prisma": "^5.10.2"
   },
   "engines": {
     "node": ">=18.0.0"
