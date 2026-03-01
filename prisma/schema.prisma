@@ -1,30 +1,36 @@
-datasource db {
-  provider = "mysql"
-  url      = env("DATABASE_URL")
-}
-
 generator client {
   provider = "prisma-client-js"
 }
 
-model User {
-  id              String    @id
-  balance         Float     @default(1000)
-  level           Int       @default(1)
-  lastDaily       DateTime?
-  msgCount        Int       @default(0)
-  claimedChatter  Boolean   @default(false)
-  hasWonToday     Boolean   @default(false)
-  claimedWin      Boolean   @default(false)
-  stocks          Json?     @default("{}")
-  totalWins       Int       @default(0)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+datasource db {
+  provider = "sqlite" // Hoặc postgresql tùy bạn dùng
+  url      = env("DATABASE_URL")
 }
 
-model Market {
-  id        Int      @id @default(1)
-  price     Float    @default(100.0)
-  history   Json
-  updatedAt DateTime @updatedAt
+model User {
+  id         String   @id
+  balance    Int      @default(100000)
+  totalWins  Int      @default(0)  // Thống kê thắng đua ngựa
+  createdAt  DateTime @default(now())
+  
+  // Quan hệ 1-n: Một người có thể có nhiều nhà (tối đa 10)
+  houses     House[]
+
+  @@index([id])
+}
+
+model House {
+  id           String   @id @default(uuid())
+  ownerId      String
+  channelId    String   @unique // Dùng để tìm nhà khi người dùng vào Voice
+  name         String
+  rarity       String
+  multiplier   Float    @default(1.0)
+  currentValue Int      @default(50000)
+  level        Int      @default(1)
+  
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@index([channelId])
 }
