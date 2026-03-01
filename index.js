@@ -16,17 +16,17 @@ const voiceTimers = new Map();
 
 // --- TỰ ĐỘNG ĐĂNG KÝ LỆNH SLASH ---
 async function deployCommands() {
-    // Chỉ đăng ký nếu có đủ thông tin môi trường
     if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
-        return console.error('❌ Thiếu DISCORD_TOKEN hoặc CLIENT_ID trong .env');
+        return console.error('❌ Thiếu DISCORD_TOKEN hoặc CLIENT_ID trong tab Variables của Railway');
     }
 
     const commands = [
         require('./commands/bot_vi').data.toJSON(),
         require('./commands/bot_realestate').data.toJSON(),
-        require('./commands/stock').data.toJSON(),
+        require('./commands/stock').data.toJSON(), // Đã khớp với file stock ông gửi
         require('./commands/bot_race').data.toJSON(),
         require('./commands/bot_daily').data.toJSON(),
+        require('./commands/tasks').data.toJSON(), // Đã thêm lệnh tasks mới sửa
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -39,101 +39,89 @@ async function deployCommands() {
     }
 }
 
-// --- CẬP NHẬT GIÁ CỔ PHIẾU (Mỗi 5 phút) ---
+// --- CẬP NHẬT GIÁ THỊ TRƯỜNG (Fix lỗi "No tables") ---
 setInterval(async () => {
     try {
-        const market = await prisma.market.findUnique({ where: { id: 1 } });
-        if (market) {
-            const change = (Math.random() * 4 - 2); // -2% đến +2%
-            const newPrice = Math.max(10, market.price + (market.price * (change / 100)));
-            let history = Array.isArray(market.history) ? market.history : [];
-            
-            history.push(parseFloat(newPrice.toFixed(2)));
-            if (history.length > 20) history.shift();
+        // Sử dụng upsert để đảm bảo ID 1 luôn tồn tại, tránh crash khi DB trống
+        const market = await prisma.market.upsert({
+            where: { id: 1 },
+            update: {}, 
+            create: { id: 1, price: 100.0, history: [100, 101, 99, 102] }
+        });
 
-            await prisma.market.update({
-                where: { id: 1 },
-                data: { price: newPrice, history: history }
-            });
-            console.log(`📈 Cập nhật giá thị trường: ${newPrice.toFixed(2)} VCASH`);
-        }
+        const change = (Math.random() * 4 - 2); 
+        const newPrice = Math.max(10, market.price + (market.price * (change / 100)));
+        let history = Array.isArray(market.history) ? market.history : [];
+        
+        history.push(parseFloat(newPrice.toFixed(2)));
+        if (history.length > 20) history.shift();
+
+        await prisma.market.update({
+            where: { id: 1 },
+            data: { price: newPrice, history: history }
+        });
+        console.log(`📈 Cập nhật giá thị trường: ${newPrice.toFixed(2)} VCASH`);
     } catch (e) {
-        console.error('❌ Lỗi cập nhật thị trường:', e);
+        console.error('❌ Lỗi cập nhật thị trường:', e.message);
     }
 }, 300000); 
 
-// Tự động đếm tin nhắn và Reset nhiệm vụ
+// --- SỰ KIỆN MESSAGE (PREFIX & NHIỆM VỤ) ---
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
     // Lệnh Prefix !vi
-    if (message.content.toLowerCase() === '!vi') {
+    if (message.content.toLowerCase().startsWith('!vi')) {
         try {
-            const vi = require('./commands/bot_vi');
-            return vi.execute(message, prisma);
+            const command = require('./commands/bot_vi');
+            return command.execute(message, prisma);
         } catch (e) { console.error(e); }
     }
 
-    const today = new Date().toDateString();
+    // Tự động đếm tin nhắn và Reset nhiệm vụ ngày
     try {
         const user = await prisma.user.upsert({
             where: { id: message.author.id },
             update: { msgCount: { increment: 1 } },
-            create: { id: message.author.id, balance: 1000, lastDaily: new Date(), msgCount: 1 }
+            create: { id: message.author.id, balance: 1000, msgCount: 1 }
         });
 
-        // Reset nhiệm vụ nếu qua ngày mới
-        if (user.lastDaily && user.lastDaily.toDateString() !== today) {
+        const today = new Date().toDateString();
+        if (user.updatedAt && user.updatedAt.toDateString() !== today) {
             await prisma.user.update({
                 where: { id: message.author.id },
-                data: { 
-                    msgCount: 1, 
-                    hasWonToday: false, 
-                    claimedChatter: false, 
-                    claimedWin: false, 
-                    lastDaily: new Date() 
-                }
+                data: { msgCount: 1, hasWonToday: false, claimedChatter: false, claimedWin: false }
             });
         }
-    } catch (e) { console.error('❌ Lỗi DB (Message):', e); }
+    } catch (e) { console.error('❌ Lỗi DB (Message):', e.message); }
 });
 
-// Treo Voice nhận Cash
-client.on('voiceStateUpdate', async (oldState, newState) => {
-    const userId = oldState.member.id;
-
-    if (!oldState.channelId && newState.channelId) {
-        voiceTimers.set(userId, Date.now());
-    } else if (oldState.channelId && !newState.channelId) {
-        const startTime = voiceTimers.get(userId);
-        if (startTime) {
-            const minutes = Math.floor((Date.now() - startTime) / 60000);
-            if (minutes > 0) {
-                try {
-                    const user = await prisma.user.findUnique({ where: { id: userId } });
-                    const reward = minutes * ((user?.level || 1) * 10) * (minutes >= 60 ? 1.5 : 1);
-                    await prisma.user.update({
-                        where: { id: userId },
-                        data: { balance: { increment: Math.floor(reward) } }
-                    });
-                    console.log(`💰 ${oldState.member.user.tag} nhận ${Math.floor(reward)} cho ${minutes}p voice.`);
-                } catch (e) { console.error(e); }
-            }
-            voiceTimers.delete(userId);
+// --- XỬ LÝ INTERACTION (SLASH & BUTTON) ---
+client.on('interactionCreate', async (interaction) => {
+    // 1. Xử lý Slash Command
+    if (interaction.isChatInputCommand()) {
+        try {
+            const commandName = interaction.commandName === 'tasks' ? 'tasks' : `bot_${interaction.commandName}`;
+            const command = require(`./commands/${commandName}`);
+            await command.execute(interaction, prisma);
+        } catch (error) {
+            console.error('❌ Lỗi thực thi Slash:', error);
+            if (!interaction.replied) await interaction.reply({ content: '❌ Lỗi hệ thống!', ephemeral: true });
         }
     }
-});
 
-// Xử lý Interaction
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    try {
-        const command = require(`./commands/bot_${interaction.commandName}`);
-        await command.execute(interaction, prisma);
-    } catch (error) {
-        console.error('❌ Lỗi thực thi interaction:', error);
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: '❌ Lỗi hệ thống khi thực hiện lệnh này!', ephemeral: true });
+    // 2. Xử lý Button (Dành cho lệnh !tasks)
+    if (interaction.isButton()) {
+        if (interaction.customId.startsWith('claim_tasks')) {
+            const userId = interaction.customId.split('_')[2];
+            if (interaction.user.id !== userId) {
+                return interaction.reply({ content: '❌ Đây không phải bảng nhiệm vụ của bạn!', ephemeral: true });
+            }
+            // Gọi lại file tasks để xử lý logic claim
+            const tasksCmd = require('./commands/tasks');
+            // Giả lập interaction để chạy logic claim
+            interaction.options = { getString: () => 'claim' }; 
+            await tasksCmd.execute(interaction, prisma);
         }
     }
 });
