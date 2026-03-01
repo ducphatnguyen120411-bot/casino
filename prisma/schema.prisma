@@ -1,0 +1,22 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id // Discord User ID
+  balance      Float    @default(1000)
+  lastDaily    DateTime?
+  stocks       Json?    // Lưu trữ cổ phiếu sở hữu { "AAPL": 10 }
+  properties   Json?    // Lưu trữ BĐS { "Penthouse": 1 }
+  lastReaction DateTime?
+}
+
+model Market {
+  id    Int    @id @default(1)
+  stocks Json   // { "AAPL": 150.5, "VCASH": 10.0 }
+}
