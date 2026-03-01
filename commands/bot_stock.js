@@ -1,115 +1,111 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 
 module.exports = {
-    async execute(message, args, prisma) {
-        const userId = message.author.id;
-        const action = args[0]?.toLowerCase();
+    data: new SlashCommandBuilder()
+        .setName('stock')
+        .setDescription('Sàn chứng khoán trung ương Verdict')
+        .addSubcommand(sub => sub.setName('view').setDescription('Xem biểu đồ và giá hiện tại'))
+        .addSubcommand(sub => 
+            sub.setName('buy')
+            .setDescription('Mua cổ phiếu VCASH')
+            .addIntegerOption(opt => opt.setName('qty').setDescription('Số lượng muốn mua').setRequired(true)))
+        .addSubcommand(sub => 
+            sub.setName('sell')
+            .setDescription('Bán cổ phiếu VCASH')
+            .addIntegerOption(opt => opt.setName('qty').setDescription('Số lượng muốn bán').setRequired(true))),
 
-        // 🟢 1. LẤY DỮ LIỆU THỊ TRƯỜNG TỪ DATABASE
-        let market = await prisma.market.upsert({
-            where: { id: 1 },
-            update: {},
-            create: { id: 1, price: 100.0, history: [100, 102, 98, 105, 101] }
-        });
+    async execute(interaction, prisma) {
+        // Hỗ trợ cả Prefix !stock view/buy/sell
+        const isSlash = interaction.options !== undefined;
+        const userId = isSlash ? interaction.user.id : interaction.author.id;
+        const subcommand = isSlash ? interaction.options.getSubcommand() : interaction.content.split(' ')[1]?.toLowerCase() || 'view';
+        const qty = isSlash ? interaction.options.getInteger('qty') : parseInt(interaction.content.split(' ')[2]);
 
-        let history = market.history;
-        const oldPrice = market.price;
+        // 🟢 1. LẤY DỮ LIỆU THỊ TRƯỜNG (Giá chung toàn server)
+        let market = await prisma.market.findUnique({ where: { id: 1 } });
         
-        // Thuật toán biến động giá thực tế (Random Walk)
-        const volatility = 0.05; // 5% biến động
-        const change = oldPrice * volatility * (Math.random() * 2 - 1);
-        const currentPrice = parseFloat((oldPrice + change).toFixed(2));
+        // Khởi tạo nếu chưa có
+        if (!market) {
+            market = await prisma.market.create({
+                data: { id: 1, price: 100.0, history: [100, 101, 99, 102] }
+            });
+        }
 
-        // Cập nhật lịch sử giá vào DB
-        history.push(currentPrice);
-        if (history.length > 15) history.shift();
-
-        await prisma.market.update({
-            where: { id: 1 },
-            data: { price: currentPrice, history: history }
-        });
-
-        // 🔴 2. VẼ BIỂU ĐỒ NẾN (CANDLESTICK VISUAL)
-        const drawGraph = (data) => {
-            const min = Math.min(...data);
-            const max = Math.max(...data);
-            const range = max - min || 1;
-            return data.map((p, i) => {
-                const prev = data[i - 1] || p;
-                const emoji = p >= prev ? '📈' : '📉'; // Nến xanh/đỏ
-                return emoji;
-            }).join('');
-        };
-
-        const diff = (currentPrice - history[0]).toFixed(2);
-        const diffPercent = ((diff / history[0]) * 100).toFixed(2);
-        const status = diff >= 0 ? '🐂 BULL MARKET (TĂNG TRƯỞNG)' : '🐻 BEAR MARKET (SUY THOÁI)';
+        const currentPrice = market.price;
+        const history = market.history;
+        const firstPrice = history[0];
+        const diff = (currentPrice - firstPrice).toFixed(2);
+        const diffPercent = ((diff / firstPrice) * 100).toFixed(2);
         const themeColor = diff >= 0 ? '#2ecc71' : '#e74c3c';
 
-        // 🏦 3. TRUY VẤN VÍ CHUNG NGƯỜI DÙNG
+        // 🏦 2. LẤY DỮ LIỆU NGƯỜI DÙNG
         let userData = await prisma.user.upsert({
             where: { id: userId },
             update: {},
-            create: { id: userId, balance: 1000, stocks: {} }
+            create: { id: userId, balance: 1000, stocks: { VCASH: 0 } }
         });
 
-        let userStocks = userData.stocks || {};
+        let userStocks = userData.stocks || { VCASH: 0 };
         const owned = userStocks.VCASH || 0;
 
-        // --- GIAO DIỆN CHÍNH ---
-        if (!action || action === 'view') {
+        // --- SUBCOMMAND: VIEW ---
+        if (subcommand === 'view') {
+            const drawGraph = (data) => {
+                return data.map((p, i) => {
+                    const prev = data[i - 1] || p;
+                    return p >= prev ? '📈' : '📉';
+                }).join('');
+            };
+
             const embed = new EmbedBuilder()
-                .setTitle(`🏛️ SÀN CHỨNG KHOÁN TRUNG ƯƠNG (VCASH)`)
+                .setTitle(`🏛️ THỊ TRƯỜNG CHỨNG KHOÁN (VCASH)`)
                 .setColor(themeColor)
-                .setDescription(`**Trạng thái:** \`${status}\`\n**Biến động 24h:** \`${diff > 0 ? '+' : ''}${diff} (${diffPercent}%)\``)
-                .setThumbnail('https://i.imgur.com/8pP4XjL.png') // Icon sàn chứng khoán
+                .setThumbnail('https://i.imgur.com/8pP4XjL.png')
                 .addFields(
-                    { name: '💰 GIÁ NIÊM YẾT', value: `> **${currentPrice.toLocaleString()}** Cash`, inline: true },
-                    { name: '💼 TÀI SẢN CỦA BẠN', value: `> **${owned}** Cổ phiếu`, inline: true },
-                    { name: '📊 BIỂU ĐỒ XU HƯỚNG', value: `\`\`\`diff\n${history.map(h => (h >= currentPrice ? '+' : '-') + h.toFixed(1)).join(' ')}\`\`\`\n${drawGraph(history)}`, inline: false },
-                    { name: '💵 GIÁ TRỊ VÍ CHUNG', value: `\`${userData.balance.toLocaleString()}\` Cash`, inline: true },
-                    { name: '🏦 GIÁ TRỊ CỔ PHIẾU', value: `\`${(owned * currentPrice).toLocaleString()}\` Cash`, inline: true }
+                    { name: '💰 GIÁ HIỆN TẠI', value: `> **${currentPrice.toFixed(2)}** Cash`, inline: true },
+                    { name: '💼 ĐANG SỞ HỮU', value: `> **${owned}** VCASH`, inline: true },
+                    { name: '📊 XU HƯỚNG', value: `\`\`\`diff\n${history.map(h => (h >= currentPrice ? '+' : '-') + h.toFixed(1)).join(' ')}\`\`\`\n${drawGraph(history)}`, inline: false },
+                    { name: '📈 Biến động', value: `\`${diff > 0 ? '+' : ''}${diff} (${diffPercent}%)\``, inline: true },
+                    { name: '🏦 Tổng vốn', value: `\`${(owned * currentPrice).toLocaleString()}\` Cash`, inline: true }
                 )
-                .setFooter({ text: 'Phí giao dịch: 1% | Dùng !stock buy/sell [số lượng]' })
+                .setFooter({ text: 'Giá cập nhật tự động mỗi 5 phút | Phí 1%' })
                 .setTimestamp();
 
-            return message.reply({ embeds: [embed] });
+            return isSlash ? interaction.reply({ embeds: [embed] }) : interaction.reply({ embeds: [embed] });
         }
 
-        // --- LOGIC MUA/BÁN VỚI PHÍ GIAO DỊCH 1% ---
-        const qty = parseInt(args[1]);
-        if (isNaN(qty) || qty <= 0) return message.reply('❌ Số lượng phải là số nguyên dương!');
+        // --- LOGIC MUA/BÁN ---
+        if (isNaN(qty) || qty <= 0) return interaction.reply('❌ Vui lòng nhập số lượng hợp lệ!');
 
-        if (action === 'buy') {
-            const subTotal = qty * currentPrice;
-            const fee = subTotal * 0.01; // Thuế 1%
-            const totalCost = subTotal + fee;
-
-            if (userData.balance < totalCost) return message.reply('⚠️ Ví chung không đủ tiền (bao gồm 1% phí)!');
+        if (subcommand === 'buy') {
+            const totalCost = (qty * currentPrice) * 1.01; // Giá + 1% phí
+            if (userData.balance < totalCost) return interaction.reply(`⚠️ Bạn không đủ tiền! Cần: **${totalCost.toLocaleString()}** Cash.`);
 
             userStocks.VCASH = owned + qty;
             await prisma.user.update({
                 where: { id: userId },
-                data: { balance: { decrement: totalCost }, stocks: userStocks }
+                data: { 
+                    balance: { decrement: totalCost },
+                    stocks: userStocks
+                }
             });
-
-            return message.reply(`✅ **KHỚP LỆNH MUA:**\n📥 Đã nhận: \`${qty}\` VCASH\n💸 Tổng chi (phí 1%): \`${totalCost.toLocaleString()}\` Cash`);
+            return interaction.reply(`✅ Mua thành công **${qty}** VCASH. Phí: 1%`);
         }
 
-        if (action === 'sell') {
-            if (owned < qty) return message.reply('❌ Bạn không đủ cổ phiếu!');
-
-            const subTotal = qty * currentPrice;
-            const fee = subTotal * 0.01;
-            const totalGain = subTotal - fee;
-
+        if (subcommand === 'sell') {
+            if (owned < qty) return interaction.reply('❌ Bạn không có đủ cổ phiếu để bán!');
+            
+            const totalGain = (qty * currentPrice) * 0.99; // Giá - 1% phí
             userStocks.VCASH = owned - qty;
+            
             await prisma.user.update({
                 where: { id: userId },
-                data: { balance: { increment: totalGain }, stocks: userStocks }
+                data: { 
+                    balance: { increment: totalGain },
+                    stocks: userStocks
+                }
             });
-
-            return message.reply(`✅ **KHỚP LỆNH BÁN:**\n📤 Đã bán: \`${qty}\` VCASH\n💰 Thu về (trừ phí 1%): \`${totalGain.toLocaleString()}\` Cash`);
+            return interaction.reply(`✅ Đã bán **${qty}** VCASH. Thu về: **${totalGain.toLocaleString()}** Cash (Trừ 1% phí).`);
         }
     }
 };
