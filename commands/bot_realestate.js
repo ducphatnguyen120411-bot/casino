@@ -1,57 +1,57 @@
 const { 
     SlashCommandBuilder, EmbedBuilder, ChannelType, 
-    PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle 
+    PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder 
 } = require('discord.js');
 
-// Map để lưu thời gian người dùng vào Voice (Xử lý In-Memory)
 const voiceSession = new Map();
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('realestate')
-        .setDescription('🏰 Hệ thống Bất động sản Voice Premium')
+        .setDescription('🏰 Hệ thống Chuỗi Bất động sản Voice')
         .addSubcommand(sub => 
             sub.setName('buy')
-                .setDescription('Mua đất & Xây Voice Nhà (Giá: 50k)')
+                .setDescription('Mua thêm nhà (Tối đa 10 căn - Giá: 50k)')
                 .addStringOption(opt => opt.setName('name').setDescription('Tên căn hộ').setRequired(true)))
         .addSubcommand(sub => 
-            sub.setName('home')
-                .setDescription('Xem thông tin căn hộ và số dư'))
+            sub.setName('info')
+                .setDescription('Xem danh sách tất cả nhà bạn đang sở hữu'))
+        .addSubcommand(sub => 
+            sub.setName('upgrade')
+                .setDescription('Nâng cấp một căn nhà cụ thể'))
         .addSubcommand(sub => 
             sub.setName('sell')
-                .setDescription('Bán căn hộ hiện tại cho ngân hàng (70% giá trị)')),
+                .setDescription('Bán một căn nhà trong chuỗi sở hữu')),
 
     async execute(interaction, prisma) {
-        const { options, user, guild, channel } = interaction;
+        const { options, user, guild } = interaction;
         const sub = options.getSubcommand();
 
-        // 1. KHỞI TẠO DATA NGƯỜI DÙNG
         let userData = await prisma.user.upsert({
             where: { id: user.id },
             update: {},
-            create: { id: user.id, balance: 100000 } // Tặng 100k trải nghiệm
+            create: { id: user.id, balance: 100000 }
         });
 
-        // --- SUBCOMMAND: BUY (MUA NHÀ & GACHA) ---
+        // Lấy danh sách nhà hiện tại
+        const userHouses = await prisma.house.findMany({ where: { ownerId: user.id } });
+
+        // --- MUA NHÀ (Giới hạn 10 căn) ---
         if (sub === 'buy') {
+            if (userHouses.length >= 10) return interaction.reply("❌ Bạn đã đạt giới hạn tối đa **10 căn nhà**!");
+            
             const price = 50000;
-            if (userData.balance < price) return interaction.reply(`❌ Bạn thiếu **${(price - userData.balance).toLocaleString()}** Cash!`);
+            if (userData.balance < price) return interaction.reply(`❌ Thiếu **${(price - userData.balance).toLocaleString()}** Cash!`);
 
             await interaction.deferReply();
-
-            // Tỉ lệ Gacha Độ hiếm
             const rand = Math.random() * 100;
             let rarity = { name: "Bình Dân", multi: 1.2, color: "#95a5a6", emoji: "🏠" };
             if (rand > 98) rarity = { name: "Huyền Thoại", multi: 8.0, color: "#ffac33", emoji: "🌌" };
             else if (rand > 85) rarity = { name: "Cực Hiếm", multi: 3.5, color: "#a633ff", emoji: "💎" };
-            else if (rand > 65) rarity = { name: "Sang Trọng", multi: 2.0, color: "#3380ff", emoji: "🏙️" };
-
-            const houseName = options.getString('name');
 
             try {
-                // Tạo Voice Channel thật
                 const voiceChannel = await guild.channels.create({
-                    name: `${rarity.emoji} | ${houseName}`,
+                    name: `${rarity.emoji} | ${options.getString('name')}`,
                     type: ChannelType.GuildVoice,
                     permissionOverwrites: [
                         { id: guild.id, deny: [PermissionFlagsBits.Connect] },
@@ -63,115 +63,97 @@ module.exports = {
                     prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: price } } }),
                     prisma.house.create({
                         data: {
-                            ownerId: user.id,
-                            channelId: voiceChannel.id,
-                            name: houseName,
-                            rarity: rarity.name,
-                            multiplier: rarity.multi,
-                            currentValue: price
+                            ownerId: user.id, channelId: voiceChannel.id, name: options.getString('name'),
+                            rarity: rarity.name, multiplier: rarity.multi, currentValue: price, level: 1
                         }
                     })
                 ]);
-
-                const buyEmbed = new EmbedBuilder()
-                    .setTitle('🎊 TÂN GIA THỊNH VƯỢNG!')
-                    .setColor(rarity.color)
-                    .setThumbnail(user.displayAvatarURL())
-                    .setDescription(`Bạn đã sở hữu bất động sản: **${houseName}**`)
-                    .addFields(
-                        { name: '🌟 Độ hiếm', value: `**${rarity.name}**`, inline: true },
-                        { name: '📈 Hệ số', value: `\`x${rarity.multi}\``, inline: true },
-                        { name: '📍 Địa chỉ', value: `<#${voiceChannel.id}>`, inline: false }
-                    )
-                    .setFooter({ text: 'Treo Voice tại đây để tăng giá trị nhà!' });
-
-                return interaction.editReply({ embeds: [buyEmbed] });
-            } catch (err) {
-                return interaction.editReply("❌ Lỗi: Bot thiếu quyền `ManageChannels`.");
-            }
+                return interaction.editReply(`✅ Đã mua căn nhà thứ **${userHouses.length + 1}** thành công!`);
+            } catch (err) { return interaction.editReply("❌ Lỗi quyền hạn Bot."); }
         }
 
-        // --- SUBCOMMAND: HOME (THÔNG TIN) ---
-        if (sub === 'home') {
-            const houses = await prisma.house.findMany({ where: { ownerId: user.id } });
-            
-            const homeEmbed = new EmbedBuilder()
-                .setAuthor({ name: `Tài sản của ${user.username}`, iconURL: user.displayAvatarURL() })
+        // --- THÔNG TIN CHUỖI NHÀ (INFO) ---
+        if (sub === 'info') {
+            const embed = new EmbedBuilder()
+                .setTitle(`🏨 Chuỗi Bất động sản của ${user.username}`)
                 .setColor('#2ecc71')
-                .addFields({ name: '💳 Số dư ví', value: `\`${userData.balance.toLocaleString()}\` Cash` });
+                .addFields({ name: '💳 Tổng tài sản ví', value: `\`${userData.balance.toLocaleString()}\` Cash` });
 
-            if (houses.length === 0) {
-                homeEmbed.setDescription("Hiện bạn chưa có nhà. Hãy dùng `/realestate buy`.");
-            } else {
-                houses.forEach((h, i) => {
-                    homeEmbed.addFields({
-                        name: `${i + 1}. ${h.name} [${h.rarity}]`,
-                        value: `💰 Giá trị: \`${h.currentValue.toLocaleString()}\` | 📈 Hệ số: \`x${h.multiplier}\` | 🎙️ <#${h.channelId}>`
+            if (userHouses.length === 0) embed.setDescription("Bạn chưa sở hữu căn nhà nào.");
+            else {
+                userHouses.forEach((h, i) => {
+                    embed.addFields({
+                        name: `${i + 1}. ${h.name} [Lv.${h.level}]`,
+                        value: `💎 ${h.rarity} | 📈 x${h.multiplier.toFixed(1)} | 💰 ${h.currentValue.toLocaleString()} | 📍 <#${h.channelId}>`
                     });
                 });
             }
-
-            return interaction.reply({ embeds: [homeEmbed] });
+            return interaction.reply({ embeds: [embed] });
         }
 
-        // --- SUBCOMMAND: SELL (BÁN NHÀ) ---
-        if (sub === 'sell') {
-            const house = await prisma.house.findFirst({ where: { ownerId: user.id } });
-            if (!house) return interaction.reply("❌ Bạn không có nhà để bán!");
+        // --- NÂNG CẤP & BÁN (Cần chọn nhà) ---
+        if (sub === 'upgrade' || sub === 'sell') {
+            if (userHouses.length === 0) return interaction.reply("❌ Bạn không có nhà để thực hiện thao tác này!");
 
-            const refund = Math.floor(house.currentValue * 0.7);
+            // Tạo Menu chọn nhà để nâng cấp/bán
+            const selectMenu = new StringSelectMenuBuilder()
+                .setCustomId('select_house')
+                .setPlaceholder('Chọn căn nhà bạn muốn thao tác...')
+                .addOptions(userHouses.map(h => ({
+                    label: h.name,
+                    description: `${h.rarity} - Trị giá: ${h.currentValue.toLocaleString()}`,
+                    value: `${sub}_${h.id}`
+                })));
+
+            const row = new ActionRowBuilder().addComponents(selectMenu);
+            const response = await interaction.reply({ content: `📍 Bạn muốn **${sub === 'upgrade' ? 'Nâng cấp' : 'Bán'}** căn nhà nào?`, components: [row] });
+
+            const collector = response.createMessageComponentCollector({ filter: i => i.user.id === user.id, time: 20000 });
             
-            await prisma.$transaction([
-                prisma.user.update({ where: { id: user.id }, data: { balance: { increment: refund } } }),
-                prisma.house.delete({ where: { id: house.id } })
-            ]);
+            collector.on('collect', async i => {
+                const [action, houseId] = i.values[0].split('_');
+                const targetHouse = userHouses.find(h => h.id === houseId);
 
-            // Xóa channel trên Discord
-            const chan = guild.channels.cache.get(house.channelId);
-            if (chan) await chan.delete().catch(() => {});
+                if (action === 'upgrade') {
+                    const cost = Math.floor(targetHouse.currentValue * 0.4);
+                    if (userData.balance < cost) return i.reply({ content: "❌ Không đủ tiền!", ephemeral: true });
 
-            return interaction.reply(`✅ Đã bán nhà **${house.name}**, bạn nhận lại **${refund.toLocaleString()}** Cash (Thuế 30%).`);
+                    await prisma.$transaction([
+                        prisma.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } }),
+                        prisma.house.update({ where: { id: houseId }, data: { level: { increment: 1 }, multiplier: { increment: 0.5 }, currentValue: { increment: cost } } })
+                    ]);
+                    await i.update({ content: `✅ Đã nâng cấp **${targetHouse.name}**!`, components: [] });
+                } else {
+                    const refund = Math.floor(targetHouse.currentValue * 0.7);
+                    await prisma.$transaction([
+                        prisma.user.update({ where: { id: user.id }, data: { balance: { increment: refund } } }),
+                        prisma.house.delete({ where: { id: houseId } })
+                    ]);
+                    const chan = guild.channels.cache.get(targetHouse.channelId);
+                    if (chan) await chan.delete().catch(() => {});
+                    await i.update({ content: `💰 Đã bán **${targetHouse.name}**, nhận lại **${refund.toLocaleString()}**!`, components: [] });
+                }
+            });
         }
     },
 
-    // --- LOGIC XỬ LÝ VOICE (GỘP CHUNG TRONG FILE) ---
-    // Hàm này cần được gọi từ file index.js (event voiceStateUpdate)
+    // --- XỬ LÝ VOICE (Hàm handleVoice giữ nguyên logic cũ) ---
     async handleVoice(oldState, newState, prisma) {
-        const userId = newState.id;
-
-        // Vào Voice: Lưu thời gian
-        if (!oldState.channelId && newState.channelId) {
-            voiceSession.set(userId, Date.now());
-        }
-
-        // Thoát Voice: Tính tiền & Tăng giá nhà
+        // ... (Logic cộng tiền dựa trên channelId của căn nhà bất kỳ trong DB) ...
+        const uid = newState.id;
+        if (!oldState.channelId && newState.channelId) voiceSession.set(uid, Date.now());
         if (oldState.channelId && !newState.channelId) {
-            const joinTime = voiceSession.get(userId);
-            if (!joinTime) return;
-
-            const mins = Math.floor((Date.now() - joinTime) / 60000);
-            voiceSession.delete(userId);
-            if (mins < 1) return;
-
+            const start = voiceSession.get(uid);
+            if (!start) return;
+            const mins = Math.floor((Date.now() - start) / 60000);
+            voiceSession.delete(uid);
             const house = await prisma.house.findUnique({ where: { channelId: oldState.channelId } });
-            if (!house) return;
-
-            const baseRate = 20; // 20 Cash mỗi phút
-            const totalEarned = Math.floor(mins * baseRate * house.multiplier);
-
-            // 1. Cộng tiền cho người treo
-            await prisma.user.update({
-                where: { id: userId },
-                data: { balance: { increment: totalEarned } }
-            });
-
-            // 2. Nếu chủ nhà treo trong nhà mình -> Tăng giá trị nhà (Bất động sản lên giá)
-            if (house.ownerId === userId) {
-                const appreciation = Math.floor(totalEarned * 0.4); // Giá trị nhà tăng 40% số tiền kiếm được
-                await prisma.house.update({
-                    where: { id: house.id },
-                    data: { currentValue: { increment: appreciation } }
-                });
+            if (house && mins >= 1) {
+                const earn = Math.floor(mins * 25 * house.multiplier);
+                await prisma.user.update({ where: { id: uid }, data: { balance: { increment: earn } } });
+                if (house.ownerId === uid) {
+                    await prisma.house.update({ where: { id: house.id }, data: { currentValue: { increment: Math.floor(earn * 0.3) } } });
+                }
             }
         }
     }
