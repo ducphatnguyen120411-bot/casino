@@ -1,68 +1,77 @@
 const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 
 module.exports = {
-    // Hỗ trợ cả Slash Command cho hiện đại
     data: new SlashCommandBuilder()
         .setName('vi')
-        .setDescription('Xem ví tiền chung và tài sản của bạn')
-        .addUserOption(opt => opt.setName('user').setDescription('Xem ví của người khác')),
+        .setDescription('💰 Xem ví tiền và số dư tài khoản')
+        .addUserOption(option => 
+            option.setName('user')
+                .setDescription('Chọn người bạn muốn xem ví (để trống nếu xem ví của mình)')
+                .setRequired(false)),
 
-    async execute(interaction, prisma) {
-        // Lấy User (hỗ trợ cả lệnh prefix !vi và slash /vi)
-        const target = interaction.options?.getUser('user') || interaction.user;
+    async execute(input, prisma) {
+        // Hỗ trợ cả Slash Command và Prefix Command (nếu bạn có hệ thống handler cũ)
+        const userObj = input.options?.getUser('user') || input.author || input.user;
+        const isSelf = userObj.id === (input.user?.id || input.author?.id);
         
-        // 1. Truy vấn "Ví Chung" từ Database
-        const userData = await prisma.user.findUnique({
-            where: { id: target.id }
-        });
-
-        // Nếu người dùng chưa có trong DB (người mới hoàn toàn)
-        if (!userData) {
-            return interaction.reply({ 
-                content: `❌ **${target.username}** chưa mở tài khoản ngân hàng Verdict!`, 
-                ephemeral: true 
-            });
+        // Tránh lỗi khi tương tác mất quá lâu
+        if (input.deferred || !input.replied) {
+            try { await input.deferReply(); } catch (e) {}
         }
 
-        // 2. Định nghĩa danh hiệu dựa trên số dư (Tạo độ oai)
-        let rank = "Dân Nghèo";
-        if (userData.balance >= 1000000) rank = "💎 Tỷ Phú Verdict";
-        else if (userData.balance >= 100000) rank = "💰 Đại Gia Khu Vực";
-        else if (userData.balance >= 50000) rank = "🏦 Doanh Nhân Trẻ";
-        else if (userData.balance >= 10000) rank = "💵 Khá Giả";
+        try {
+            // Lấy hoặc tạo dữ liệu người dùng
+            let userData = await prisma.user.findUnique({ where: { id: userObj.id } });
 
-        // 3. Tạo Embed "Ví Tiền Chung" siêu đẹp
-        const walletEmbed = new EmbedBuilder()
-            .setTitle('💳 THẺ TÀI KHOẢN VERDICT')
-            .setDescription(`Chào mừng trở lại, **${target.username}**!`)
-            .setColor(userData.balance > 0 ? '#f1c40f' : '#e74c3c') // Vàng nếu có tiền, đỏ nếu nợ/hết tiền
-            .setThumbnail(target.displayAvatarURL({ dynamic: true }))
-            .addFields(
-                { 
-                    name: '🏦 Số Dư Ví Chung', 
-                    value: `> **${userData.balance.toLocaleString()}** Verdict Cash`, 
-                    inline: false 
-                },
-                { 
-                    name: '🏗️ Bất Động Sản', 
-                    value: `Level **${userData.level}**`, 
-                    inline: true 
-                },
-                { 
-                    name: '🎖️ Danh Hiệu', 
-                    value: `*${rank}*`, 
-                    inline: true 
-                },
-                { 
-                    name: '📈 Thống Kê', 
-                    value: `Thắng **${userData.totalWins}** trận game`, 
-                    inline: true 
-                }
-            )
-            .setImage('https://i.imgur.com/vHqY7bK.png') // Thanh gạch ngang trang trí (tùy chọn)
-            .setFooter({ text: 'Số dư này dùng chung cho: Đua Ngựa, Phản Xạ, BĐS và Chứng Khoán' })
-            .setTimestamp();
+            if (!userData) {
+                userData = await prisma.user.create({
+                    data: { id: userObj.id, balance: 1000, msgCount: 0 }
+                });
+            }
 
-        return interaction.reply({ embeds: [walletEmbed] });
+            // Tính toán danh hiệu dựa trên msgCount (Ví dụ)
+            const level = Math.floor(userData.msgCount / 100);
+            const rankName = level > 10 ? '💎 Đại Gia' : level > 5 ? '🌟 Tích Cực' : '🌱 Thành Viên';
+
+            const embed = new EmbedBuilder()
+                .setColor(isSelf ? '#00ff99' : '#ffcc00')
+                .setAuthor({ 
+                    name: `THÔNG TIN TÀI KHOẢN`, 
+                    iconURL: 'https://cdn-icons-png.flaticon.com/512/2489/2489756.png' 
+                })
+                .setTitle(`${userObj.tag}`)
+                .setThumbnail(userObj.displayAvatarURL({ dynamic: true, size: 512 }))
+                .setDescription(isSelf ? '_Đây là ví cá nhân của bạn._' : `_Bạn đang xem ví của ${userObj.username}_`)
+                .addFields(
+                    { 
+                        name: '💵 Tài Sản Hiện Có', 
+                        value: `\`\`\`fix\n${userData.balance.toLocaleString()} VCASH\`\`\``, 
+                        inline: false 
+                    },
+                    { 
+                        name: '📊 Thống Kê', 
+                        value: `💬 **Tin nhắn:** \`${userData.msgCount}\` \n🏆 **Danh hiệu:** \`${rankName}\``, 
+                        inline: true 
+                    },
+                    { 
+                        name: '🎖️ Cấp Độ', 
+                        value: `⭐ **Level:** \`${level}\``, 
+                        inline: true 
+                    }
+                )
+                .setFooter({ 
+                    text: `Yêu cầu bởi ${input.user?.username || input.author?.username}`, 
+                    iconURL: (input.user || input.author).displayAvatarURL() 
+                })
+                .setTimestamp();
+
+            return await input.editReply({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('❌ Lỗi thực thi ví:', error);
+            const errorMsg = 'Có lỗi xảy ra khi truy cập dữ liệu ví!';
+            if (input.deferred) return await input.editReply(errorMsg);
+            return input.reply(errorMsg);
+        }
     }
 };
